@@ -41,6 +41,16 @@ password: admintestpassword
 题目配置保存在 `problems/` 下，每题一个 UTF-8 JSON 文件。写入采用临时文件和
 原子替换，运行时文件不会出现半写入状态。
 
+评测控制接口：
+
+- `GET /api/languages/`：查询已注册语言；
+- `POST /api/languages/`：注册经过安全模板校验的新语言；
+- `POST /api/submissions/`：创建评测任务并立即返回 `pending`。
+
+系统启动时会注册 Python 和 C++14。后台评测使用 `asyncio` 子进程，逐测试点记录
+AC、WA、RE、TLE、MLE 或 CE，限制运行时间、内存和输出长度。生产验收环境应为
+Linux，并提供 `python3` 和支持 C++14 的 `g++`。
+
 ## 测试与静态检查
 
 ```bash

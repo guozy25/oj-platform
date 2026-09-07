@@ -139,6 +139,7 @@ class Database:
             await connection.executescript(SCHEMA)
             await connection.commit()
         await self.ensure_initial_admin()
+        await self.ensure_default_languages()
 
     async def ensure_initial_admin(self) -> None:
         existing = await self.fetch_one(
@@ -164,6 +165,40 @@ class Database:
                     now.date().isoformat(),
                     now.isoformat(),
                 ),
+            )
+            await connection.commit()
+
+    async def ensure_default_languages(self) -> None:
+        created_at = datetime.now(timezone.utc).isoformat()
+        defaults = (
+            (
+                "python",
+                ".py",
+                None,
+                "python3 {src}",
+                self.settings.default_time_limit,
+                self.settings.default_memory_limit,
+                created_at,
+            ),
+            (
+                "cpp",
+                ".cpp",
+                "g++ -O2 -std=c++14 {src} -o {exe}",
+                "{exe}",
+                self.settings.default_time_limit,
+                self.settings.default_memory_limit,
+                created_at,
+            ),
+        )
+        async with self.connection() as connection:
+            await connection.executemany(
+                """
+                INSERT OR IGNORE INTO languages (
+                    name, file_ext, compile_cmd, run_cmd,
+                    time_limit, memory_limit, created_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+                """,
+                defaults,
             )
             await connection.commit()
 

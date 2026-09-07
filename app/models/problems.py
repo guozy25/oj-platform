@@ -38,12 +38,15 @@ class ProblemModel(BaseModel):
     hint: str = ""
     source: str = ""
     tags: list[str] = Field(default_factory=list)
-    time_limit: float = Field(default=3.0, gt=0, allow_inf_nan=False)
-    memory_limit: int = Field(default=128, gt=0)
+    time_limit: float | None = Field(default=None, gt=0, le=3_600, allow_inf_nan=False)
+    memory_limit: int | None = Field(default=None, gt=0, le=65_536)
     author: str = ""
     difficulty: str = ""
     public_cases: bool = False
 
     def to_api_dict(self) -> dict:
         # public_cases is managed by the Step-5 visibility endpoint, not Step 1.
-        return self.model_dump(mode="json", exclude={"public_cases"})
+        data = self.model_dump(mode="json", exclude={"public_cases"})
+        data["time_limit"] = self.time_limit if self.time_limit is not None else 3.0
+        data["memory_limit"] = self.memory_limit if self.memory_limit is not None else 128
+        return data

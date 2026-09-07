@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -20,7 +21,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await database.initialize()
         application.state.settings = app_settings
         application.state.database = database
-        yield
+        application.state.background_tasks = set()
+        try:
+            yield
+        finally:
+            tasks = list(application.state.background_tasks)
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     logging.basicConfig(
         level=getattr(logging, app_settings.log_level, logging.INFO),
