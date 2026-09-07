@@ -1,0 +1,19 @@
+.DS_Store
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime state
+data/*.db
+data/*.db-*
+runtime/
+
+# User submissions and compiler output must never be committed.
+*.out
+*.exe
+
