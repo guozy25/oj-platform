@@ -1,2 +1,1 @@
 """Async OJ application package."""
-

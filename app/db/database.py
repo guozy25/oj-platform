@@ -22,6 +22,8 @@ CREATE TABLE IF NOT EXISTS users (
     join_time TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_nocase
+ON users(username COLLATE NOCASE);
 
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -31,6 +33,17 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS role_change_logs (
+    change_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_user_id TEXT NOT NULL REFERENCES users(user_id),
+    target_user_id TEXT NOT NULL REFERENCES users(user_id),
+    old_role TEXT NOT NULL,
+    new_role TEXT NOT NULL,
+    changed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_role_change_logs_actor ON role_change_logs(actor_user_id);
+CREATE INDEX IF NOT EXISTS idx_role_change_logs_target ON role_change_logs(target_user_id);
 
 CREATE TABLE IF NOT EXISTS languages (
     name TEXT PRIMARY KEY,
@@ -136,9 +149,7 @@ class Database:
             return
 
         now = datetime.now(timezone.utc)
-        password_hash = await asyncio.to_thread(
-            hash_password, self.settings.initial_admin_password
-        )
+        password_hash = await asyncio.to_thread(hash_password, self.settings.initial_admin_password)
         async with self.connection() as connection:
             await connection.execute(
                 """
@@ -156,16 +167,18 @@ class Database:
             )
             await connection.commit()
 
-    async def fetch_one(
-        self, query: str, parameters: Iterable[Any] = ()
-    ) -> aiosqlite.Row | None:
+    async def fetch_one(self, query: str, parameters: Iterable[Any] = ()) -> aiosqlite.Row | None:
         async with self.connection() as connection:
             cursor = await connection.execute(query, tuple(parameters))
             return await cursor.fetchone()
 
-    async def fetch_all(
-        self, query: str, parameters: Iterable[Any] = ()
-    ) -> list[aiosqlite.Row]:
+    async def fetch_all(self, query: str, parameters: Iterable[Any] = ()) -> list[aiosqlite.Row]:
         async with self.connection() as connection:
             cursor = await connection.execute(query, tuple(parameters))
             return list(await cursor.fetchall())
+
+    async def execute(self, query: str, parameters: Iterable[Any] = ()) -> int:
+        async with self.connection() as connection:
+            cursor = await connection.execute(query, tuple(parameters))
+            await connection.commit()
+            return cursor.rowcount

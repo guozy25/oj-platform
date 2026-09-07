@@ -14,4 +14,3 @@ def api_response(
         status_code=status_code,
         content={"code": status_code, "msg": msg, "data": data},
     )
-

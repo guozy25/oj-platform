@@ -11,4 +11,3 @@ async def health_check(request: Request):
     database = request.app.state.database
     row = await database.fetch_one("SELECT 1 AS healthy")
     return api_response(data={"status": "ok", "database": row["healthy"] == 1})
-

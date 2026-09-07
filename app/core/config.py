@@ -12,6 +12,13 @@ def _path_from_env(name: str, default: str, project_root: Path) -> Path:
     return configured if configured.is_absolute() else project_root / configured
 
 
+def _bool_from_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     project_root: Path
@@ -20,6 +27,7 @@ class Settings:
     runtime_dir: Path
     session_cookie_name: str = "oj_session"
     session_ttl_seconds: int = 86_400
+    session_cookie_secure: bool = False
     initial_admin_username: str = "admin"
     initial_admin_password: str = "admintestpassword"
     log_level: str = "INFO"
@@ -34,10 +42,9 @@ class Settings:
             runtime_dir=_path_from_env("OJ_RUNTIME_DIR", "runtime", root),
             session_cookie_name=os.getenv("OJ_SESSION_COOKIE_NAME", "oj_session"),
             session_ttl_seconds=int(os.getenv("OJ_SESSION_TTL_SECONDS", "86400")),
+            session_cookie_secure=_bool_from_env("OJ_SESSION_COOKIE_SECURE", False),
             initial_admin_username=os.getenv("OJ_INITIAL_ADMIN_USERNAME", "admin"),
-            initial_admin_password=os.getenv(
-                "OJ_INITIAL_ADMIN_PASSWORD", "admintestpassword"
-            ),
+            initial_admin_password=os.getenv("OJ_INITIAL_ADMIN_PASSWORD", "admintestpassword"),
             log_level=os.getenv("OJ_LOG_LEVEL", "INFO").upper(),
         )
 
@@ -45,4 +52,3 @@ class Settings:
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.problems_dir.mkdir(parents=True, exist_ok=True)
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
-

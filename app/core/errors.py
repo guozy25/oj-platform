@@ -43,4 +43,3 @@ def install_exception_handlers(app: FastAPI) -> None:
     async def unexpected_error_handler(request: Request, exc: Exception):
         logger.exception("Unhandled error while processing %s %s", request.method, request.url.path)
         return api_response(msg="internal server error", status_code=500)
-
