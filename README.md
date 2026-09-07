@@ -32,6 +32,15 @@ password: admintestpassword
 - `POST /api/users/admin`：管理员创建其他管理员；
 - `PUT /api/users/{user_id}/role`：管理员修改角色并记录权限变更日志。
 
+题目管理接口：
+
+- `GET /api/problems/`、`GET /api/problems/{problem_id}`：题目列表与详情；
+- `POST /api/problems/`、`PUT /api/problems/{problem_id}`：新增与完整更新题目；
+- `DELETE /api/problems/{problem_id}`：管理员删除题目。
+
+题目配置保存在 `problems/` 下，每题一个 UTF-8 JSON 文件。写入采用临时文件和
+原子替换，运行时文件不会出现半写入状态。
+
 ## 测试与静态检查
 
 ```bash
