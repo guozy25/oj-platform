@@ -1,8 +1,10 @@
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
+from frontend import ui
 from frontend.api_client import APIClientError, OJAPIClient, normalize_base_url
 from frontend.forms import build_problem_payload, parse_io_pairs, parse_tags
 
@@ -72,6 +74,74 @@ def test_api_client_reports_transport_error():
         client.get("/api/health")
     assert captured.value.status_code is None
     client.close()
+
+
+def test_authenticated_401_resets_local_session_and_reruns(monkeypatch):
+    class RerunRequested(RuntimeError):
+        pass
+
+    class SessionState(dict):
+        def __getattr__(self, name):
+            return self[name]
+
+    state = SessionState(
+        current_user={"user_id": "u1", "username": "alice", "role": "user"},
+        api_base_url="http://backend.test",
+    )
+    reset_urls: list[str] = []
+    flash_messages: list[str] = []
+    fake_streamlit = SimpleNamespace(
+        session_state=state,
+        error=lambda _message: pytest.fail("expired sessions should rerun before rendering"),
+        rerun=lambda: (_ for _ in ()).throw(RerunRequested()),
+    )
+    monkeypatch.setattr(ui, "st", fake_streamlit)
+    monkeypatch.setattr(ui, "_replace_client", reset_urls.append)
+    monkeypatch.setattr(ui, "_set_flash", flash_messages.append)
+
+    with pytest.raises(RerunRequested):
+        ui._show_error(APIClientError("not logged in", status_code=401))
+
+    assert reset_urls == ["http://backend.test"]
+    assert flash_messages == ["登录已失效，请重新登录"]
+
+
+def test_login_form_401_remains_a_visible_credentials_error(monkeypatch):
+    messages: list[str] = []
+    fake_streamlit = SimpleNamespace(
+        session_state={"current_user": None},
+        error=messages.append,
+        rerun=lambda: pytest.fail("a failed login must not trigger a rerun"),
+    )
+    monkeypatch.setattr(ui, "st", fake_streamlit)
+
+    ui._show_error(APIClientError("invalid username or password", status_code=401))
+
+    assert messages == ["请先登录：invalid username or password"]
+
+
+def test_successful_problem_mutation_schedules_fresh_list_and_reruns(monkeypatch):
+    class RerunRequested(RuntimeError):
+        pass
+
+    class SessionState(dict):
+        def __setattr__(self, name, value):
+            self[name] = value
+
+    state = SessionState()
+    flash_messages: list[str] = []
+    fake_streamlit = SimpleNamespace(
+        session_state=state,
+        rerun=lambda: (_ for _ in ()).throw(RerunRequested()),
+    )
+    monkeypatch.setattr(ui, "st", fake_streamlit)
+    monkeypatch.setattr(ui, "_set_flash", flash_messages.append)
+
+    with pytest.raises(RerunRequested):
+        ui._refresh_after_mutation("saved", show_problem_list=True)
+
+    assert state["pending_problem_operation"] == "题目列表"
+    assert flash_messages == ["saved"]
 
 
 @pytest.mark.parametrize("value", ["localhost:8000", "ftp://example.com", "http://u:p@host"])

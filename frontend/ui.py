@@ -23,6 +23,8 @@ def _new_client(base_url: str) -> OJAPIClient:
 
 
 def _init_state() -> None:
+    if st.session_state.pop("reset_navigation", False):
+        st.session_state.pop("navigation", None)
     if "api_base_url" not in st.session_state:
         configured = os.getenv("OJ_API_URL", DEFAULT_API_URL)
         try:
@@ -50,9 +52,14 @@ def _replace_client(base_url: str) -> None:
     st.session_state.current_user = None
     st.session_state.last_submission_id = ""
     st.session_state.active_submission_id = ""
+    st.session_state.reset_navigation = True
 
 
 def _show_error(error: APIClientError) -> None:
+    if error.status_code == 401 and st.session_state.get("current_user") is not None:
+        _replace_client(st.session_state.api_base_url)
+        _set_flash("登录已失效，请重新登录")
+        st.rerun()
     if error.status_code is None:
         st.error(error.message)
         return
@@ -78,6 +85,13 @@ def _render_flash() -> None:
     if message:
         st.success(message)
         st.session_state.flash = None
+
+
+def _refresh_after_mutation(message: str, *, show_problem_list: bool = False) -> None:
+    if show_problem_list:
+        st.session_state.pending_problem_operation = "题目列表"
+    _set_flash(message)
+    st.rerun()
 
 
 def _configure_sidebar() -> None:
@@ -180,8 +194,6 @@ def _profile_page(user: dict[str, Any]) -> None:
         profile = _client().get(f"/api/users/{user['user_id']}").data
     except APIClientError as exc:
         _show_error(exc)
-        if exc.status_code == 401:
-            _replace_client(st.session_state.api_base_url)
         return
 
     st.session_state.current_user = {
@@ -335,11 +347,15 @@ def _problem_form(
 
 def _problem_page(user: dict[str, Any]) -> None:
     st.header("题目")
+    pending_operation = st.session_state.pop("pending_problem_operation", None)
+    if pending_operation is not None:
+        st.session_state.problem_operation = pending_operation
     operation = st.radio(
         "操作",
         ["题目列表", "新建题目", "编辑题目"],
         horizontal=True,
         label_visibility="collapsed",
+        key="problem_operation",
     )
     try:
         problems = _load_problems()
@@ -370,7 +386,9 @@ def _problem_page(user: dict[str, Any]) -> None:
             except APIClientError as exc:
                 _show_error(exc)
             else:
-                st.success(f"{response.msg}：{payload['id']}")
+                _refresh_after_mutation(
+                    f"{response.msg}：{payload['id']}", show_problem_list=True
+                )
         return
 
     if not problems:
@@ -393,7 +411,7 @@ def _problem_page(user: dict[str, Any]) -> None:
         except APIClientError as exc:
             _show_error(exc)
         else:
-            st.success(response.msg)
+            _refresh_after_mutation(response.msg, show_problem_list=True)
 
     if user.get("role") == "admin":
         st.divider()
@@ -433,8 +451,7 @@ def _problem_page(user: dict[str, Any]) -> None:
                     _show_error(exc)
                 else:
                     st.session_state[server_state_key] = None
-                    _set_flash(response.msg)
-                    st.rerun()
+                    _refresh_after_mutation(response.msg)
 
         confirmed = st.checkbox(
             f"我确认删除题目 {problem_id}", key=f"delete_confirm_{problem_id}"
@@ -445,8 +462,9 @@ def _problem_page(user: dict[str, Any]) -> None:
             except APIClientError as exc:
                 _show_error(exc)
             else:
-                _set_flash(f"{response.msg}：{problem_id}")
-                st.rerun()
+                _refresh_after_mutation(
+                    f"{response.msg}：{problem_id}", show_problem_list=True
+                )
 
 
 def _submit_page() -> None:
@@ -535,9 +553,8 @@ def _render_submission_detail(submission_id: str, is_admin: bool) -> None:
             except APIClientError as exc:
                 _show_error(exc)
             else:
-                _set_flash(response.msg)
                 st.session_state.last_submission_id = submission_id
-                st.rerun()
+                _refresh_after_mutation(response.msg)
     if show_log:
         try:
             log = _client().get(f"/api/submissions/{submission_id}/log").data
@@ -663,7 +680,7 @@ def _users_page() -> None:
         except APIClientError as exc:
             _show_error(exc)
         else:
-            st.success(response.msg)
+            _refresh_after_mutation(response.msg)
 
     st.subheader("创建管理员")
     with st.form("create_admin"):
@@ -678,7 +695,7 @@ def _users_page() -> None:
         except APIClientError as exc:
             _show_error(exc)
         else:
-            st.success(f"{response.msg}：{response.data['username']}")
+            _refresh_after_mutation(f"{response.msg}：{response.data['username']}")
 
 
 def _audit_page() -> None:
