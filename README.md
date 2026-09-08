@@ -1,7 +1,7 @@
 # Async OJ
 
 程序设计训练（Python）在线评测系统。后端使用 FastAPI，所有 API 路由均采用
-`async def`；前端将在后续阶段使用 Streamlit。
+`async def`；前端使用 Streamlit，并仅通过 REST API 与后端交互。
 
 ## 本地开发
 
@@ -13,6 +13,17 @@ source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
 uvicorn app.main:app --reload
 ```
+
+另开一个终端启动前端：
+
+```bash
+source .venv/bin/activate
+streamlit run streamlit_app.py
+```
+
+前端默认访问 `http://127.0.0.1:8000`，也可在页面侧边栏修改后端地址，
+或在启动前设置 `OJ_API_URL`。前端 Session 按 Streamlit 用户会话隔离，
+服务端 Cookie 会在页面重运行间保留。
 
 服务启动时会自动创建运行目录、数据库表和课程要求的初始管理员账户。
 
@@ -64,6 +75,13 @@ password: admintestpassword
 
 私有题目下，普通用户只能查看自己的总分，管理员可查看逐测试点详情；
 开启公开后，所有已登录用户可查看该题的测试点日志。成功和被拒绝的日志访问均会记录审计状态。
+
+Streamlit 前端页面：
+
+- 注册、登录、登出和个人信息；
+- 题目列表、详情、新建、编辑，以及管理员删除和日志可见性设置；
+- 代码提交、提交列表、状态刷新、编译/运行/错误信息和评测日志；
+- 管理员用户列表、角色修改、管理员创建、提交重判和访问审计。
 
 系统启动时会注册 Python 和 C++14。后台评测使用 `asyncio` 子进程，逐测试点记录
 AC、WA、RE、TLE、MLE 或 CE，限制运行时间、内存和输出长度。生产验收环境应为
