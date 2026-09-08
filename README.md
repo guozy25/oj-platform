@@ -70,6 +70,7 @@ password: admintestpassword
 评测日志与审计接口：
 
 - `GET /api/submissions/{submission_id}/log`：查询总分和逐测试点评测日志；
+- `GET /api/problems/{problem_id}/log_visibility`：管理员查询题目日志可见性；
 - `PUT /api/problems/{problem_id}/log_visibility`：管理员配置题目测试点日志是否公开；
 - `GET /api/logs/access/`：管理员按用户、题目或分页查询日志访问审计记录。
 

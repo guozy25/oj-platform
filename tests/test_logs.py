@@ -10,6 +10,7 @@ from tests.test_users import login, register
 @pytest.mark.asyncio
 async def test_log_endpoints_require_authentication_before_validation(client):
     assert (await client.get("/api/submissions/missing/log")).status_code == 401
+    assert (await client.get("/api/problems/missing/log_visibility")).status_code == 401
     assert (
         await client.put("/api/problems/missing/log_visibility", json={"public_cases": "bad"})
     ).status_code == 401
@@ -28,6 +29,9 @@ async def test_only_visibility_endpoint_can_change_public_cases(client, test_set
         json={"public_cases": True},
     )
     assert forbidden.status_code == 403
+    assert (
+        await client.get("/api/problems/visibility-problem/log_visibility")
+    ).status_code == 403
 
     injected_create = problem_payload("injected-visibility")
     injected_create["public_cases"] = True
@@ -39,6 +43,13 @@ async def test_only_visibility_endpoint_can_change_public_cases(client, test_set
 
     await client.post("/api/auth/logout")
     await login_as_admin(client, test_settings)
+    initial_visibility = await client.get(
+        "/api/problems/visibility-problem/log_visibility"
+    )
+    assert initial_visibility.json()["data"] == {
+        "problem_id": "visibility-problem",
+        "public_cases": False,
+    }
     assert (
         await client.put(
             "/api/problems/visibility-problem/log_visibility",
@@ -67,6 +78,12 @@ async def test_only_visibility_endpoint_can_change_public_cases(client, test_set
         "msg": "log visibility updated",
         "data": {"problem_id": "visibility-problem", "public_cases": True},
     }
+    assert (
+        await client.get("/api/problems/visibility-problem/log_visibility")
+    ).json()["data"] == {
+        "problem_id": "visibility-problem",
+        "public_cases": True,
+    }
 
     await client.post("/api/auth/logout")
     await login(client, "visibility-user", "secret123")
@@ -87,6 +104,15 @@ async def test_only_visibility_endpoint_can_change_public_cases(client, test_set
         "problem_id": "visibility-problem",
         "public_cases": False,
     }
+    assert (
+        await client.get("/api/problems/visibility-problem/log_visibility")
+    ).json()["data"] == {
+        "problem_id": "visibility-problem",
+        "public_cases": False,
+    }
+    assert (
+        await client.get("/api/problems/missing-problem/log_visibility")
+    ).status_code == 404
 
 
 @pytest.mark.asyncio

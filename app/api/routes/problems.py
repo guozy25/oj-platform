@@ -62,6 +62,16 @@ async def update_log_visibility(
     return api_response(msg="log visibility updated", data=data)
 
 
+@router.get("/{problem_id}/log_visibility")
+async def get_log_visibility(
+    problem_id: str,
+    request: Request,
+    _admin: AdminUserDependency,
+):
+    data = await _problem_service(request).get_log_visibility(problem_id)
+    return api_response(data=data)
+
+
 @router.delete("/{problem_id}")
 async def delete_problem(
     problem_id: str,

@@ -398,22 +398,43 @@ def _problem_page(user: dict[str, Any]) -> None:
     if user.get("role") == "admin":
         st.divider()
         st.subheader("管理员操作")
-        visibility = st.radio(
-            "测试点日志可见性",
-            [(False, "仅管理员可见详情"), (True, "向已登录用户公开详情")],
-            format_func=lambda option: option[1],
-            key=f"visibility_{problem_id}",
-        )
-        if st.button("更新日志可见性"):
-            try:
-                response = _client().put(
-                    f"/api/problems/{problem_id}/log_visibility",
-                    json={"public_cases": visibility[0]},
-                )
-            except APIClientError as exc:
-                _show_error(exc)
-            else:
-                st.success(response.msg)
+        try:
+            visibility_data = _client().get(
+                f"/api/problems/{problem_id}/log_visibility"
+            ).data
+        except APIClientError as exc:
+            _show_error(exc)
+        else:
+            current_visibility = bool(visibility_data["public_cases"])
+            current_label = "已向已登录用户公开" if current_visibility else "仅管理员可见"
+            st.info(f"当前后端状态：{current_label}")
+
+            widget_key = f"visibility_{problem_id}"
+            server_state_key = f"visibility_server_{problem_id}"
+            if st.session_state.get(server_state_key) != current_visibility:
+                st.session_state[widget_key] = current_visibility
+                st.session_state[server_state_key] = current_visibility
+
+            desired_visibility = st.radio(
+                "测试点日志可见性",
+                [False, True],
+                format_func=lambda public: (
+                    "向已登录用户公开详情" if public else "仅管理员可见详情"
+                ),
+                key=widget_key,
+            )
+            if st.button("更新日志可见性"):
+                try:
+                    response = _client().put(
+                        f"/api/problems/{problem_id}/log_visibility",
+                        json={"public_cases": desired_visibility},
+                    )
+                except APIClientError as exc:
+                    _show_error(exc)
+                else:
+                    st.session_state[server_state_key] = None
+                    _set_flash(response.msg)
+                    st.rerun()
 
         confirmed = st.checkbox(
             f"我确认删除题目 {problem_id}", key=f"delete_confirm_{problem_id}"
@@ -491,7 +512,7 @@ def _render_submission_detail(submission_id: str, is_admin: bool) -> None:
     status_column.metric("状态", STATUS_LABELS.get(status, status))
     score_column.metric("得分", detail["score"] if detail["score"] is not None else "—")
     count_column.metric(
-        "测试点数", detail["counts"] if detail["counts"] is not None else "—"
+        "满分", detail["counts"] if detail["counts"] is not None else "—"
     )
     if status == "pending":
         st.info("评测任务正在排队或执行，请点击“查询 / 刷新”获取最新状态。")
@@ -524,8 +545,11 @@ def _render_submission_detail(submission_id: str, is_admin: bool) -> None:
             _show_error(exc)
         else:
             st.markdown("#### 评测日志")
-            summary = {"score": log.get("score"), "counts": log.get("counts")}
-            st.json(summary)
+            score_column, full_score_column = st.columns(2)
+            score_column.metric("得分", log.get("score") if log.get("score") is not None else "—")
+            full_score_column.metric(
+                "满分", log.get("counts") if log.get("counts") is not None else "—"
+            )
             details = log.get("details")
             if details is None:
                 st.caption("当前题目未公开逐测试点详情。")
@@ -578,8 +602,17 @@ def _submissions_page(user: dict[str, Any]) -> None:
             else:
                 st.write(f"共 {listing['total']} 条")
                 if listing["submissions"]:
+                    display_rows = [
+                        {
+                            "提交 ID": item["submission_id"],
+                            "状态": STATUS_LABELS.get(item["status"], item["status"]),
+                            "得分": item.get("score", "—"),
+                            "满分": item.get("counts", "—"),
+                        }
+                        for item in listing["submissions"]
+                    ]
                     st.dataframe(
-                        listing["submissions"], use_container_width=True, hide_index=True
+                        display_rows, use_container_width=True, hide_index=True
                     )
                 else:
                     st.info("没有符合条件的提交。")

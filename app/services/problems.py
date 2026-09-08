@@ -41,3 +41,7 @@ class ProblemService:
         updated_problem = problem.model_copy(update={"public_cases": public_cases})
         await self.repository.update(problem_id, updated_problem)
         return {"problem_id": problem_id, "public_cases": public_cases}
+
+    async def get_log_visibility(self, problem_id: str) -> dict[str, str | bool]:
+        problem = await self.repository.get(problem_id)
+        return {"problem_id": problem_id, "public_cases": problem.public_cases}
