@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
+from uuid import uuid4
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 
 async def register(client, username: str, password: str = "secret123"):
@@ -28,6 +30,9 @@ async def test_registration_login_self_query_and_logout(client, test_settings):
 
     wrong_password = await login(client, "alice", "wrong-password")
     assert wrong_password.status_code == 401
+    unknown_user = await login(client, "unknown-user", "wrong-password")
+    assert unknown_user.status_code == 401
+    assert unknown_user.json() == wrong_password.json()
 
     logged_in = await login(client, "alice", "alice-password")
     assert logged_in.status_code == 200
@@ -63,11 +68,43 @@ async def test_registration_validation(client):
         assert response.status_code == 400
         assert response.json()["code"] == 400
 
-    long_password = "密" * 80
+    long_password = "密" * 512
     registered = await register(client, "long-password-user", long_password)
     assert registered.status_code == 200
     logged_in = await login(client, "long-password-user", long_password)
     assert logged_in.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_user_counts_follow_submission_semantics(client, app):
+    user = (await register(client, "counted-user")).json()["data"]
+    now = datetime.now(timezone.utc).isoformat()
+    submissions = [
+        (str(uuid4()), "problem-a", "success", 10, 10),
+        (str(uuid4()), "problem-a", "success", 0, 10),
+        (str(uuid4()), "problem-b", "success", 20, 20),
+        (str(uuid4()), "problem-c", "error", None, None),
+    ]
+    async with app.state.database.connection() as connection:
+        await connection.executemany(
+            """
+            INSERT INTO submissions (
+                submission_id, user_id, problem_id, language, code, status,
+                score, counts, compile_info, run_info, error_info, created_at, updated_at
+            ) VALUES (?, ?, ?, 'python', 'print(1)', ?, ?, ?, NULL, NULL, NULL, ?, ?)
+            """,
+            [
+                (submission_id, user["user_id"], problem_id, status, score, counts, now, now)
+                for submission_id, problem_id, status, score, counts in submissions
+            ],
+        )
+        await connection.commit()
+
+    await login(client, "counted-user", "secret123")
+    profile = await client.get(f"/api/users/{user['user_id']}")
+    assert profile.status_code == 200
+    assert profile.json()["data"]["submit_count"] == 4
+    assert profile.json()["data"]["resolve_count"] == 2
 
 
 @pytest.mark.asyncio
@@ -148,6 +185,87 @@ async def test_admin_creation_role_updates_and_error_priority(client, app, test_
     await client.post("/api/auth/logout")
     banned_login = await login(client, "regular-user", "secret123")
     assert banned_login.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_role_changes_affect_existing_sessions_immediately(client, app, test_settings):
+    await login(
+        client,
+        test_settings.initial_admin_username,
+        test_settings.initial_admin_password,
+    )
+    created = await client.post(
+        "/api/users/admin",
+        json={"username": "session-admin", "password": "secret123"},
+    )
+    assert created.status_code == 200
+    deputy_id = created.json()["data"]["user_id"]
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://deputy") as deputy_client:
+        assert (
+            await deputy_client.post(
+                "/api/auth/login",
+                json={"username": "session-admin", "password": "secret123"},
+            )
+        ).status_code == 200
+        assert (await deputy_client.get("/api/users/")).status_code == 200
+
+        demoted = await client.put(
+            f"/api/users/{deputy_id}/role",
+            json={"role": "user"},
+        )
+        assert demoted.status_code == 200
+        assert (await deputy_client.get("/api/users/")).status_code == 403
+
+        promoted = await client.put(
+            f"/api/users/{deputy_id}/role",
+            json={"role": "admin"},
+        )
+        assert promoted.status_code == 200
+        assert (await deputy_client.get("/api/users/")).status_code == 200
+
+        banned = await client.put(
+            f"/api/users/{deputy_id}/role",
+            json={"role": "banned"},
+        )
+        assert banned.status_code == 200
+        assert (await deputy_client.get(f"/api/users/{deputy_id}")).status_code == 401
+        assert (
+            await deputy_client.post(
+                "/api/auth/login",
+                json={"username": "session-admin", "password": "secret123"},
+            )
+        ).status_code == 403
+
+        restored = await client.put(
+            f"/api/users/{deputy_id}/role",
+            json={"role": "user"},
+        )
+        assert restored.status_code == 200
+        assert (
+            await deputy_client.post(
+                "/api/auth/login",
+                json={"username": "session-admin", "password": "secret123"},
+            )
+        ).status_code == 200
+
+    audit_rows = await app.state.database.fetch_all(
+        """
+        SELECT old_role, new_role, changed_at
+        FROM role_change_logs
+        WHERE target_user_id = ?
+        ORDER BY change_id
+        """,
+        (deputy_id,),
+    )
+    assert [(row["old_role"], row["new_role"]) for row in audit_rows] == [
+        ("admin", "user"),
+        ("user", "admin"),
+        ("admin", "banned"),
+        ("banned", "user"),
+    ]
+    assert all(row["changed_at"] for row in audit_rows)
 
 
 @pytest.mark.asyncio

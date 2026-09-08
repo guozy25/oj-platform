@@ -10,6 +10,8 @@ from app.db.database import Database
 from app.models.auth import CurrentUser
 from app.services.passwords import verify_password
 
+_DUMMY_PASSWORD_HASH = "{BCRYPT-SHA256}$2b$12$cxSg0yHCcRIaT/S.iW9qb.uN7QgB6JKDwvFZKfbogV7XdmzwDzCTi"
+
 
 class AuthenticationService:
     def __init__(self, database: Database, settings: Settings) -> None:
@@ -25,10 +27,9 @@ class AuthenticationService:
             """,
             (username,),
         )
-        password_matches = row is not None and await asyncio.to_thread(
-            verify_password, password, row["password_hash"]
-        )
-        if not password_matches:
+        password_hash = row["password_hash"] if row is not None else _DUMMY_PASSWORD_HASH
+        password_matches = await asyncio.to_thread(verify_password, password, password_hash)
+        if row is None or not password_matches:
             raise APIError(401, "invalid username or password")
         if row["role"] == "banned":
             raise APIError(403, "user is banned")

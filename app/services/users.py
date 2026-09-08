@@ -87,13 +87,16 @@ class UserService:
         return serialize_user(row)
 
     async def update_role(self, user_id: str, role: str, actor_user_id: str) -> dict:
-        existing = await self.database.fetch_one(
-            "SELECT user_id, role FROM users WHERE user_id = ?", (user_id,)
-        )
-        if existing is None:
-            raise APIError(404, "user not found")
-
         async with self.database.connection() as connection:
+            await connection.execute("BEGIN IMMEDIATE")
+            cursor = await connection.execute(
+                "SELECT user_id, role FROM users WHERE user_id = ?", (user_id,)
+            )
+            existing = await cursor.fetchone()
+            if existing is None:
+                await connection.rollback()
+                raise APIError(404, "user not found")
+
             await connection.execute("UPDATE users SET role = ? WHERE user_id = ?", (role, user_id))
             await connection.execute(
                 """

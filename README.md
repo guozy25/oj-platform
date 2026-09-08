@@ -32,6 +32,9 @@ password: admintestpassword
 - `POST /api/users/admin`：管理员创建其他管理员；
 - `PUT /api/users/{user_id}/role`：管理员修改角色并记录权限变更日志。
 
+密码经 bcrypt-SHA256 处理后存储，Session 由服务端数据库持久化并设置过期时间。
+角色变更与审计日志在同一事务中完成，封禁用户时会立即撤销其已有 Session。
+
 题目管理接口：
 
 - `GET /api/problems/`、`GET /api/problems/{problem_id}`：题目列表与详情；

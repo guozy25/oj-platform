@@ -7,7 +7,7 @@ class Credentials(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     username: str = Field(min_length=3, max_length=40)
-    password: str = Field(min_length=6, max_length=128)
+    password: str = Field(min_length=6)
 
     @field_validator("username", mode="before")
     @classmethod
