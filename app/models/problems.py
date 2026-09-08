@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StringConstraints
 
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 PROBLEM_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]*$"
@@ -24,7 +24,7 @@ class InputOutputPair(BaseModel):
     output: str
 
 
-class ProblemModel(BaseModel):
+class ProblemInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     id: ProblemId
@@ -42,6 +42,9 @@ class ProblemModel(BaseModel):
     memory_limit: int | None = Field(default=None, gt=0, le=65_536)
     author: str = ""
     difficulty: str = ""
+
+
+class ProblemModel(ProblemInput):
     public_cases: bool = False
 
     def to_api_dict(self) -> dict:
@@ -50,3 +53,9 @@ class ProblemModel(BaseModel):
         data["time_limit"] = self.time_limit if self.time_limit is not None else 3.0
         data["memory_limit"] = self.memory_limit if self.memory_limit is not None else 128
         return data
+
+
+class LogVisibilityUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    public_cases: StrictBool = False

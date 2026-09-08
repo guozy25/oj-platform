@@ -56,6 +56,15 @@ password: admintestpassword
 - `GET /api/submissions/`：按用户、题目和状态组合筛选，支持可选分页；
 - `PUT /api/submissions/{submission_id}/rejudge`：管理员使用原提交 ID 发起重判。
 
+评测日志与审计接口：
+
+- `GET /api/submissions/{submission_id}/log`：查询总分和逐测试点评测日志；
+- `PUT /api/problems/{problem_id}/log_visibility`：管理员配置题目测试点日志是否公开；
+- `GET /api/logs/access/`：管理员按用户、题目或分页查询日志访问审计记录。
+
+私有题目下，普通用户只能查看自己的总分，管理员可查看逐测试点详情；
+开启公开后，所有已登录用户可查看该题的测试点日志。成功和被拒绝的日志访问均会记录审计状态。
+
 系统启动时会注册 Python 和 C++14。后台评测使用 `asyncio` 子进程，逐测试点记录
 AC、WA、RE、TLE、MLE 或 CE，限制运行时间、内存和输出长度。生产验收环境应为
 Linux，并提供 `python3` 和支持 C++14 的 `g++`。服务重启时会自动恢复数据库中未完成的
