@@ -10,6 +10,7 @@ from app.api.router import api_router
 from app.core.config import Settings
 from app.core.errors import install_exception_handlers
 from app.db.database import Database
+from app.services.ai_provider import AIProviderClient
 from app.services.judge_tasks import schedule_judge
 
 
@@ -24,6 +25,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         application.state.database = database
         application.state.background_tasks = set()
         application.state.judge_tasks = {}
+        application.state.ai_task_handles = {}
+        application.state.ai_model_configs = {}
+        application.state.ai_provider_factory = AIProviderClient
+        application.state.ai_task_semaphore = asyncio.Semaphore(2)
+        await database.execute(
+            """
+            UPDATE ai_tasks
+            SET status = 'failed', progress = '服务重启，任务已终止',
+                error_info = 'AI task interrupted by server restart', updated_at = datetime('now')
+            WHERE status IN ('pending', 'running')
+            """
+        )
         pending_submissions = await database.fetch_all(
             "SELECT submission_id FROM submissions WHERE status = 'pending'"
         )

@@ -205,6 +205,7 @@ def test_frontend_does_not_import_backend_storage_or_services():
         "frontend/api_client.py",
         "frontend/forms.py",
         "frontend/ui.py",
+        "frontend/ai_page.py",
     ]
     forbidden = ("app.db", "app.repositories", "app.services")
     for path in source_files:

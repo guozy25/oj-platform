@@ -7,6 +7,7 @@ from typing import Any
 
 import streamlit as st
 
+from frontend.ai_page import render_ai_page
 from frontend.api_client import APIClientError, OJAPIClient, normalize_base_url
 from frontend.forms import build_problem_payload
 
@@ -37,6 +38,7 @@ def _init_state() -> None:
     st.session_state.setdefault("flash", None)
     st.session_state.setdefault("last_submission_id", "")
     st.session_state.setdefault("active_submission_id", "")
+    st.session_state.setdefault("active_ai_task_id", "")
 
 
 def _client() -> OJAPIClient:
@@ -52,6 +54,7 @@ def _replace_client(base_url: str) -> None:
     st.session_state.current_user = None
     st.session_state.last_submission_id = ""
     st.session_state.active_submission_id = ""
+    st.session_state.active_ai_task_id = ""
     st.session_state.reset_navigation = True
 
 
@@ -172,7 +175,7 @@ def _sidebar_navigation(user: dict[str, Any]) -> str:
     st.sidebar.divider()
     st.sidebar.write(f"**{user['username']}**")
     st.sidebar.caption(f"角色：{user['role']}\n\nID：{user['user_id']}")
-    pages = ["我的信息", "题目", "提交代码", "提交记录"]
+    pages = ["我的信息", "题目", "提交代码", "提交记录", "AI 智能命题"]
     if user.get("role") == "admin":
         pages.extend(["用户管理", "访问审计"])
     page = st.sidebar.radio("导航", pages, key="navigation")
@@ -263,8 +266,10 @@ def _problem_form(
     button_label: str,
     *,
     initial: dict[str, Any] | None = None,
+    lock_id: bool | None = None,
 ) -> dict[str, Any] | None:
     data = initial or {}
+    id_is_locked = initial is not None if lock_id is None else lock_id
     samples = json.dumps(
         data.get("samples", [{"input": "1 2", "output": "3"}]),
         ensure_ascii=False,
@@ -280,7 +285,7 @@ def _problem_form(
         problem_id = id_column.text_input(
             "题目 ID",
             value=data.get("id", ""),
-            disabled=initial is not None,
+            disabled=id_is_locked,
         )
         title = title_column.text_input("标题", value=data.get("title", ""))
         description = st.text_area("题目描述（支持 Markdown）", value=data.get("description", ""))
@@ -304,13 +309,13 @@ def _problem_form(
             "时间限制（秒）",
             min_value=0.01,
             max_value=3600.0,
-            value=float(data.get("time_limit", 3.0)),
+            value=float(data.get("time_limit") or 3.0),
         )
         memory_limit = memory_column.number_input(
             "内存限制（MB）",
             min_value=1,
             max_value=65_536,
-            value=int(data.get("memory_limit", 128)),
+            value=int(data.get("memory_limit") or 128),
         )
         author_column, difficulty_column = st.columns(2)
         author = author_column.text_input("作者", value=data.get("author", ""))
@@ -322,7 +327,7 @@ def _problem_form(
     if not submitted:
         return None
     values = {
-        "id": data.get("id", problem_id),
+        "id": data.get("id", problem_id) if id_is_locked else problem_id,
         "title": title,
         "description": description,
         "input_description": input_description,
@@ -379,13 +384,24 @@ def _problem_page(user: dict[str, Any]) -> None:
         return
 
     if operation == "新建题目":
-        payload = _problem_form("create_problem", "创建题目")
+        generated = st.session_state.get("ai_generated_problem")
+        generated_form_key = st.session_state.get("ai_generated_form_key", "manual")
+        if generated is not None:
+            st.info("已载入 AI 生成结果。请检查并修改后再正式创建题目。")
+        payload = _problem_form(
+            f"create_problem_{generated_form_key}",
+            "创建题目",
+            initial=generated,
+            lock_id=False,
+        )
         if payload is not None:
             try:
                 response = _client().post("/api/problems/", json=payload)
             except APIClientError as exc:
                 _show_error(exc)
             else:
+                st.session_state.pop("ai_generated_problem", None)
+                st.session_state.pop("ai_generated_form_key", None)
                 _refresh_after_mutation(
                     f"{response.msg}：{payload['id']}", show_problem_list=True
                 )
@@ -394,16 +410,23 @@ def _problem_page(user: dict[str, Any]) -> None:
     if not problems:
         st.info("暂无可编辑的题目。")
         return
-    problem_id = st.selectbox("选择题目", [item["id"] for item in problems])
+    generated = st.session_state.get("ai_generated_problem")
+    generated_id = generated.get("id") if isinstance(generated, dict) else None
+    problem_ids = [item["id"] for item in problems]
+    default_index = problem_ids.index(generated_id) if generated_id in problem_ids else 0
+    problem_id = st.selectbox("选择题目", problem_ids, index=default_index)
     try:
         detail = _client().get(f"/api/problems/{problem_id}").data
     except APIClientError as exc:
         _show_error(exc)
         return
+    form_initial = generated if generated_id == problem_id else detail
+    if generated_id == problem_id:
+        st.info("已载入 AI 改进结果。请检查差异后再保存。")
     payload = _problem_form(
-        f"edit_problem_{problem_id}",
+        f"edit_problem_{problem_id}_{st.session_state.get('ai_generated_form_key', 'manual')}",
         "保存修改",
-        initial=detail,
+        initial=form_initial,
     )
     if payload is not None:
         try:
@@ -411,6 +434,8 @@ def _problem_page(user: dict[str, Any]) -> None:
         except APIClientError as exc:
             _show_error(exc)
         else:
+            st.session_state.pop("ai_generated_problem", None)
+            st.session_state.pop("ai_generated_form_key", None)
             _refresh_after_mutation(response.msg, show_problem_list=True)
 
     if user.get("role") == "admin":
@@ -736,6 +761,11 @@ def run() -> None:
 
     _render_flash()
     page = _sidebar_navigation(user)
+    try:
+        ai_problems = _load_problems() if page == "AI 智能命题" else []
+    except APIClientError as exc:
+        _show_error(exc)
+        return
     renderers: dict[str, Callable[[], None]] = {
         "我的信息": lambda: _profile_page(user),
         "题目": lambda: _problem_page(user),
@@ -743,5 +773,6 @@ def run() -> None:
         "提交记录": lambda: _submissions_page(user),
         "用户管理": _users_page,
         "访问审计": _audit_page,
+        "AI 智能命题": lambda: render_ai_page(_client(), ai_problems, _show_error),
     }
     renderers[page]()
