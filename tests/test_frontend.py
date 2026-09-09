@@ -163,6 +163,7 @@ def test_problem_form_parsers_build_complete_payload():
         "hint": "hint",
         "source": "course",
         "tags": " basic, math, ,",
+        "code_length_limit": 4096,
         "time_limit": 1.5,
         "memory_limit": 128,
         "author": " teacher ",
@@ -174,10 +175,30 @@ def test_problem_form_parsers_build_complete_payload():
     assert payload["tags"] == ["basic", "math"]
     assert payload["samples"] == [{"input": "1 2", "output": "3"}]
     assert payload["testcases"] == [{"input": "2 3", "output": "5"}]
+    assert payload["code_length_limit"] == 4096
     assert payload["time_limit"] == 1.5
     assert payload["memory_limit"] == 128
     assert payload["author"] == "teacher"
     assert payload["difficulty"] == "easy"
+
+
+def test_student_problem_payload_omits_teacher_only_resource_limits():
+    values = {
+        "id": "P1002",
+        "title": "Student draft",
+        "description": "description",
+        "input_description": "input",
+        "output_description": "output",
+        "constraints": "small",
+        "samples": '[{"input": "", "output": ""}]',
+        "testcases": '[{"input": "", "output": ""}]',
+    }
+
+    payload = build_problem_payload(values)
+
+    assert "code_length_limit" not in payload
+    assert "time_limit" not in payload
+    assert "memory_limit" not in payload
 
 
 @pytest.mark.parametrize(

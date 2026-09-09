@@ -13,7 +13,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.models.problems import ProblemId
+from app.models.problems import MAX_CODE_LENGTH_LIMIT, ProblemId
 
 LanguageName = Annotated[
     str,
@@ -129,7 +129,10 @@ class SubmissionCreate(BaseModel):
 
     problem_id: ProblemId
     language: LanguageName
-    code: str = Field(min_length=1, max_length=200_000)
+    # The actual limit is configured per problem and checked by SubmissionService.
+    # This upper bound only prevents an excessively large request from exhausting
+    # the API process before the target problem can be loaded.
+    code: str = Field(min_length=1, max_length=MAX_CODE_LENGTH_LIMIT)
 
     @field_validator("language", mode="after")
     @classmethod

@@ -42,6 +42,7 @@ def _problem_payload() -> dict:
             {"input": "1 2", "output": "3"},
             {"input": "-5 8", "output": "3"},
         ],
+        "code_length_limit": 10_000,
         "time_limit": 2,
         "memory_limit": 128,
     }
@@ -81,10 +82,17 @@ def _exercise_live_server(base_url: str) -> None:
         _require(
             client.post(
                 "/api/auth/login",
-                json={"username": "linux-smoke-user", "password": "secret123"},
+                json={"username": "admin", "password": "admintestpassword"},
             )
         )
         _require(client.post("/api/problems/", json=_problem_payload()))
+        _require(client.post("/api/auth/logout"))
+        _require(
+            client.post(
+                "/api/auth/login",
+                json={"username": "linux-smoke-user", "password": "secret123"},
+            )
+        )
 
         _submit_and_expect_ac(
             client,

@@ -26,7 +26,7 @@ async def create_problem(client, problem_id: str, *, sleep_limit: float | None =
 async def test_submission_detail_permissions_and_response_shape(client, app, test_settings):
     alice = (await register(client, "detail-alice")).json()["data"]
     await login(client, "detail-alice", "secret123")
-    await create_problem(client, "detail-problem", sleep_limit=2)
+    await create_problem(client, "detail-problem")
 
     created = await submit(
         client,
@@ -200,7 +200,7 @@ async def test_submission_list_filters_pagination_and_summaries(client, app, tes
 async def test_admin_rejudge_reuses_submission_and_replaces_results(client, app, test_settings):
     await register(client, "rejudge-user")
     await login(client, "rejudge-user", "secret123")
-    await create_problem(client, "rejudge-problem", sleep_limit=2)
+    await create_problem(client, "rejudge-problem")
     created = await submit(
         client,
         "rejudge-problem",

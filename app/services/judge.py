@@ -200,6 +200,13 @@ class JudgeService:
                 return
 
             problem = await self.problem_repository.get(row["problem_id"])
+            if len(row["code"]) > problem.code_length_limit:
+                await self._mark_error(
+                    submission_id,
+                    f"code length exceeds problem limit of "
+                    f"{problem.code_length_limit} characters",
+                )
+                return
             language = await LanguageService(
                 self.database, self.settings.allowed_language_executables
             ).get_for_execution(row["language"])
@@ -240,20 +247,10 @@ class JudgeService:
         executable_path: Path,
         working_directory: Path,
     ) -> None:
-        time_limit = (
-            problem.time_limit
-            if problem.time_limit is not None
-            else language.time_limit
-            if language.time_limit is not None
-            else self.settings.default_time_limit
-        )
-        memory_limit = (
-            problem.memory_limit
-            if problem.memory_limit is not None
-            else language.memory_limit
-            if language.memory_limit is not None
-            else self.settings.default_memory_limit
-        )
+        # Resource limits belong to the problem. Language-level values remain in
+        # the registration API for compatibility, but cannot override a problem.
+        time_limit = problem.time_limit
+        memory_limit = problem.memory_limit
 
         compile_info = None
         if language.compile_cmd is not None:
@@ -401,14 +398,16 @@ class JudgeService:
             )
             await connection.commit()
 
-    async def _mark_error(self, submission_id: str) -> None:
+    async def _mark_error(
+        self, submission_id: str, message: str = "judge internal error"
+    ) -> None:
         await self.database.execute(
             """
             UPDATE submissions
             SET status = 'error', score = NULL, counts = NULL,
                 compile_info = NULL, run_info = NULL,
-                error_info = 'judge internal error', updated_at = datetime('now')
+                error_info = ?, updated_at = datetime('now')
             WHERE submission_id = ?
             """,
-            (submission_id,),
+            (message, submission_id),
         )

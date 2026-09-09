@@ -6,6 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StringConstraints
 
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 PROBLEM_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]*$"
+DEFAULT_CODE_LENGTH_LIMIT = 200_000
+MAX_CODE_LENGTH_LIMIT = 10_000_000
 ProblemId = Annotated[
     str,
     StringConstraints(
@@ -38,8 +40,11 @@ class ProblemInput(BaseModel):
     hint: str = ""
     source: str = ""
     tags: list[str] = Field(default_factory=list)
-    time_limit: float | None = Field(default=None, gt=0, le=3_600, allow_inf_nan=False)
-    memory_limit: int | None = Field(default=None, gt=0, le=65_536)
+    code_length_limit: int = Field(
+        default=DEFAULT_CODE_LENGTH_LIMIT, gt=0, le=MAX_CODE_LENGTH_LIMIT
+    )
+    time_limit: float = Field(default=3.0, gt=0, le=3_600, allow_inf_nan=False)
+    memory_limit: int = Field(default=128, gt=0, le=65_536)
     author: str = ""
     difficulty: str = ""
 
@@ -49,10 +54,7 @@ class ProblemModel(ProblemInput):
 
     def to_api_dict(self) -> dict:
         # public_cases is managed by the Step-5 visibility endpoint, not Step 1.
-        data = self.model_dump(mode="json", exclude={"public_cases"})
-        data["time_limit"] = self.time_limit if self.time_limit is not None else 3.0
-        data["memory_limit"] = self.memory_limit if self.memory_limit is not None else 128
-        return data
+        return self.model_dump(mode="json", exclude={"public_cases"})
 
 
 class LogVisibilityUpdate(BaseModel):

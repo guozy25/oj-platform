@@ -43,14 +43,7 @@ def build_problem_payload(values: dict[str, Any]) -> dict[str, Any]:
         if not str(values[key]).strip():
             raise ValueError(f"{label}不能为空")
 
-    time_limit = float(values["time_limit"])
-    memory_limit = int(values["memory_limit"])
-    if not 0 < time_limit <= 3_600:
-        raise ValueError("时间限制必须在 0 到 3600 秒之间")
-    if not 0 < memory_limit <= 65_536:
-        raise ValueError("内存限制必须在 1 到 65536 MB 之间")
-
-    return {
+    payload = {
         "id": problem_id,
         "title": str(values["title"]).strip(),
         "description": str(values["description"]).strip(),
@@ -62,8 +55,27 @@ def build_problem_payload(values: dict[str, Any]) -> dict[str, Any]:
         "hint": str(values.get("hint", "")),
         "source": str(values.get("source", "")),
         "tags": parse_tags(str(values.get("tags", ""))),
-        "time_limit": time_limit,
-        "memory_limit": memory_limit,
         "author": str(values.get("author", "")).strip(),
         "difficulty": str(values.get("difficulty", "")).strip(),
     }
+    resource_fields = {"code_length_limit", "time_limit", "memory_limit"}
+    if resource_fields & values.keys():
+        if not resource_fields <= values.keys():
+            raise ValueError("请完整填写代码长度、时间和内存限制")
+        code_length_limit = int(values["code_length_limit"])
+        time_limit = float(values["time_limit"])
+        memory_limit = int(values["memory_limit"])
+        if not 0 < code_length_limit <= 10_000_000:
+            raise ValueError("代码长度限制必须在 1 到 10000000 字符之间")
+        if not 0 < time_limit <= 3_600:
+            raise ValueError("时间限制必须在 0 到 3600 秒之间")
+        if not 0 < memory_limit <= 65_536:
+            raise ValueError("内存限制必须在 1 到 65536 MB 之间")
+        payload.update(
+            {
+                "code_length_limit": code_length_limit,
+                "time_limit": time_limit,
+                "memory_limit": memory_limit,
+            }
+        )
+    return payload

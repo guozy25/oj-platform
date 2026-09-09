@@ -10,6 +10,7 @@ def problem_payload(
     *,
     time_limit: float | None = None,
     memory_limit: int | None = None,
+    code_length_limit: int | None = None,
     testcases: list[dict] | None = None,
 ) -> dict:
     payload = {
@@ -30,16 +31,20 @@ def problem_payload(
         payload["time_limit"] = time_limit
     if memory_limit is not None:
         payload["memory_limit"] = memory_limit
+    if code_length_limit is not None:
+        payload["code_length_limit"] = code_length_limit
     return payload
 
 
 async def register_login_and_create_problem(
     client,
+    app,
     *,
     username: str,
     problem_id: str,
     time_limit: float | None = None,
     memory_limit: int | None = None,
+    code_length_limit: int | None = None,
     testcases: list[dict] | None = None,
 ) -> None:
     registered = await client.post(
@@ -50,16 +55,32 @@ async def register_login_and_create_problem(
         "/api/auth/login", json={"username": username, "password": "secret123"}
     )
     assert logged_in.status_code == 200
+    await client.post("/api/auth/logout")
+    settings = app.state.settings
+    teacher_login = await client.post(
+        "/api/auth/login",
+        json={
+            "username": settings.initial_admin_username,
+            "password": settings.initial_admin_password,
+        },
+    )
+    assert teacher_login.status_code == 200
     created = await client.post(
         "/api/problems/",
         json=problem_payload(
             problem_id,
             time_limit=time_limit,
             memory_limit=memory_limit,
+            code_length_limit=code_length_limit,
             testcases=testcases,
         ),
     )
     assert created.status_code == 200
+    await client.post("/api/auth/logout")
+    logged_in = await client.post(
+        "/api/auth/login", json={"username": username, "password": "secret123"}
+    )
+    assert logged_in.status_code == 200
 
 
 async def submit(client, problem_id: str, code: str, language: str = "python"):
@@ -192,7 +213,7 @@ async def test_stored_language_commands_are_revalidated_before_execution(
     client, app, test_settings
 ):
     await register_login_and_create_problem(
-        client, username="stored-command-user", problem_id="stored-command"
+        client, app, username="stored-command-user", problem_id="stored-command"
     )
     user = await app.state.database.fetch_one(
         "SELECT user_id FROM users WHERE username = 'stored-command-user'"
@@ -224,7 +245,7 @@ async def test_stored_language_commands_are_revalidated_before_execution(
 @pytest.mark.asyncio
 async def test_python_accepted_and_wrong_answer_results(client, app, test_settings):
     await register_login_and_create_problem(
-        client, username="python-user", problem_id="python-verdicts"
+        client, app, username="python-user", problem_id="python-verdicts"
     )
 
     accepted = await submit(
@@ -262,6 +283,7 @@ async def test_python_accepted_and_wrong_answer_results(client, app, test_settin
 async def test_python_runtime_error_and_timeout(client, app):
     await register_login_and_create_problem(
         client,
+        app,
         username="runtime-user",
         problem_id="runtime-limits",
         time_limit=0.1,
@@ -284,6 +306,7 @@ async def test_python_runtime_error_and_timeout(client, app):
 async def test_python_memory_limit(client, app):
     await register_login_and_create_problem(
         client,
+        app,
         username="memory-user",
         problem_id="memory-limit",
         time_limit=2,
@@ -301,6 +324,7 @@ async def test_python_memory_limit(client, app):
 async def test_program_output_limit(client, app):
     await register_login_and_create_problem(
         client,
+        app,
         username="output-user",
         problem_id="output-limit",
         time_limit=2,
@@ -314,9 +338,10 @@ async def test_program_output_limit(client, app):
 
 
 @pytest.mark.asyncio
-async def test_language_limit_is_used_when_problem_omits_limit(client, app):
+async def test_problem_default_limit_overrides_language_limit(client, app):
     await register_login_and_create_problem(
         client,
+        app,
         username="fallback-user",
         problem_id="language-fallback",
         testcases=[{"input": "", "output": "done"}],
@@ -337,12 +362,79 @@ async def test_language_limit_is_used_when_problem_omits_limit(client, app):
     )
     submission_id = response.json()["data"]["submission_id"]
     await wait_for_result(app, submission_id)
-    assert (await load_testcase_results(app, submission_id))[0]["result"] == "TLE"
+    assert (await load_testcase_results(app, submission_id))[0]["result"] == "AC"
+
+
+@pytest.mark.asyncio
+async def test_problem_code_length_limit_is_enforced_before_submission(client, app):
+    await register_login_and_create_problem(
+        client,
+        app,
+        username="code-length-user",
+        problem_id="code-length-limit",
+        code_length_limit=13,
+        testcases=[{"input": "", "output": "done"}],
+    )
+
+    accepted = await submit(client, "code-length-limit", "print('done')")
+    assert accepted.status_code == 200
+    await wait_for_result(app, accepted.json()["data"]["submission_id"])
+
+    rejected = await submit(client, "code-length-limit", "print('too long')")
+    assert rejected.status_code == 400
+    assert rejected.json() == {
+        "code": 400,
+        "msg": "code length exceeds problem limit of 13 characters",
+        "data": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_judge_rechecks_code_length_for_stored_submissions(client, app):
+    await register_login_and_create_problem(
+        client,
+        app,
+        username="stored-length-user",
+        problem_id="stored-length-limit",
+        code_length_limit=5,
+    )
+    user = await app.state.database.fetch_one(
+        "SELECT user_id FROM users WHERE username = 'stored-length-user'"
+    )
+    await app.state.database.execute(
+        """
+        INSERT INTO submissions (
+            submission_id, user_id, problem_id, language, code, status,
+            created_at, updated_at
+        ) VALUES (
+            'stored-too-long', ?, 'stored-length-limit', 'python',
+            'print(3)', 'pending', datetime('now'), datetime('now')
+        )
+        """,
+        (user["user_id"],),
+    )
+
+    from app.repositories.problems import ProblemRepository
+    from app.services.judge import JudgeService
+
+    judge = JudgeService(
+        app.state.database,
+        ProblemRepository(app.state.settings.problems_dir),
+        app.state.settings,
+    )
+    await judge.judge_submission("stored-too-long")
+    result = await app.state.database.fetch_one(
+        "SELECT status, error_info FROM submissions WHERE submission_id = 'stored-too-long'"
+    )
+    assert result["status"] == "error"
+    assert result["error_info"] == "code length exceeds problem limit of 5 characters"
 
 
 @pytest.mark.asyncio
 async def test_submission_errors_and_rate_limit(client, app):
-    await register_login_and_create_problem(client, username="rate-user", problem_id="rate-limit")
+    await register_login_and_create_problem(
+        client, app, username="rate-user", problem_id="rate-limit"
+    )
     invalid = await client.post("/api/submissions/", json={})
     assert invalid.status_code == 400
     assert (await submit(client, "missing-problem", "print(1)")).status_code == 404
@@ -366,7 +458,9 @@ async def test_submission_errors_and_rate_limit(client, app):
 @pytest.mark.asyncio
 @pytest.mark.skipif(shutil.which("g++") is None, reason="g++ is required for C++ judging")
 async def test_cpp_compilation_success_and_error(client, app, test_settings):
-    await register_login_and_create_problem(client, username="cpp-user", problem_id="cpp-judge")
+    await register_login_and_create_problem(
+        client, app, username="cpp-user", problem_id="cpp-judge"
+    )
     accepted_code = """
 #include <iostream>
 int main() {

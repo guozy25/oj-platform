@@ -234,6 +234,7 @@ def _render_problem_detail(problem_id: str) -> None:
         meta.append(f"作者：{problem['author']}")
     meta.extend(
         [
+            f"代码长度限制：{problem['code_length_limit']} 字符",
             f"时间限制：{problem['time_limit']} s",
             f"内存限制：{problem['memory_limit']} MB",
         ]
@@ -267,6 +268,7 @@ def _problem_form(
     *,
     initial: dict[str, Any] | None = None,
     lock_id: bool | None = None,
+    can_set_resource_limits: bool = False,
 ) -> dict[str, Any] | None:
     data = initial or {}
     id_is_locked = initial is not None if lock_id is None else lock_id
@@ -304,19 +306,28 @@ def _problem_form(
         tags = st.text_input(
             "标签（逗号分隔）", value=", ".join(data.get("tags", []))
         )
-        limit_column, memory_column = st.columns(2)
-        time_limit = limit_column.number_input(
-            "时间限制（秒）",
-            min_value=0.01,
-            max_value=3600.0,
-            value=float(data.get("time_limit") or 3.0),
-        )
-        memory_limit = memory_column.number_input(
-            "内存限制（MB）",
-            min_value=1,
-            max_value=65_536,
-            value=int(data.get("memory_limit") or 128),
-        )
+        if can_set_resource_limits:
+            code_column, limit_column, memory_column = st.columns(3)
+            code_length_limit = code_column.number_input(
+                "代码长度限制（字符）",
+                min_value=1,
+                max_value=10_000_000,
+                value=int(data.get("code_length_limit") or 200_000),
+            )
+            time_limit = limit_column.number_input(
+                "时间限制（秒）",
+                min_value=0.01,
+                max_value=3600.0,
+                value=float(data.get("time_limit") or 3.0),
+            )
+            memory_limit = memory_column.number_input(
+                "内存限制（MB）",
+                min_value=1,
+                max_value=65_536,
+                value=int(data.get("memory_limit") or 128),
+            )
+        else:
+            st.caption("代码长度、运行时间和内存限制由老师设置。")
         author_column, difficulty_column = st.columns(2)
         author = author_column.text_input("作者", value=data.get("author", ""))
         difficulty = difficulty_column.text_input(
@@ -338,11 +349,17 @@ def _problem_form(
         "hint": hint,
         "source": source,
         "tags": tags,
-        "time_limit": time_limit,
-        "memory_limit": memory_limit,
         "author": author,
         "difficulty": difficulty,
     }
+    if can_set_resource_limits:
+        values.update(
+            {
+                "code_length_limit": code_length_limit,
+                "time_limit": time_limit,
+                "memory_limit": memory_limit,
+            }
+        )
     try:
         return build_problem_payload(values)
     except ValueError as exc:
@@ -393,6 +410,7 @@ def _problem_page(user: dict[str, Any]) -> None:
             "创建题目",
             initial=generated,
             lock_id=False,
+            can_set_resource_limits=user.get("role") == "admin",
         )
         if payload is not None:
             try:
@@ -427,6 +445,7 @@ def _problem_page(user: dict[str, Any]) -> None:
         f"edit_problem_{problem_id}_{st.session_state.get('ai_generated_form_key', 'manual')}",
         "保存修改",
         initial=form_initial,
+        can_set_resource_limits=user.get("role") == "admin",
     )
     if payload is not None:
         try:

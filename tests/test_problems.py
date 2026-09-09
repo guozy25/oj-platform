@@ -61,7 +61,7 @@ async def test_problem_endpoints_require_login_before_validation(client):
 
 @pytest.mark.asyncio
 async def test_create_list_get_and_update_problem(client, test_settings):
-    await register_and_login(client)
+    await login_as_admin(client, test_settings)
     original = problem_payload()
 
     created = await client.post("/api/problems/", json=original)
@@ -88,6 +88,7 @@ async def test_create_list_get_and_update_problem(client, test_settings):
     assert data["hint"] == ""
     assert data["source"] == ""
     assert data["tags"] == []
+    assert data["code_length_limit"] == 200_000
     assert data["time_limit"] == 3.0
     assert data["memory_limit"] == 128
     assert data["author"] == ""
@@ -95,7 +96,14 @@ async def test_create_list_get_and_update_problem(client, test_settings):
     assert "public_cases" not in data
 
     updated_payload = problem_payload(title="Updated A+B")
-    updated_payload.update({"tags": ["basic", "math"], "time_limit": 1.5, "memory_limit": 64})
+    updated_payload.update(
+        {
+            "tags": ["basic", "math"],
+            "code_length_limit": 4_096,
+            "time_limit": 1.5,
+            "memory_limit": 64,
+        }
+    )
     updated = await client.put("/api/problems/P1001", json=updated_payload)
     assert updated.status_code == 200
     assert updated.json()["msg"] == "update success"
@@ -103,6 +111,50 @@ async def test_create_list_get_and_update_problem(client, test_settings):
     updated_detail = await client.get("/api/problems/P1001")
     assert updated_detail.json()["data"]["title"] == "Updated A+B"
     assert updated_detail.json()["data"]["tags"] == ["basic", "math"]
+    assert updated_detail.json()["data"]["code_length_limit"] == 4_096
+    assert updated_detail.json()["data"]["time_limit"] == 1.5
+    assert updated_detail.json()["data"]["memory_limit"] == 64
+
+
+@pytest.mark.asyncio
+async def test_only_admin_can_set_problem_resource_limits(client, test_settings):
+    await login_as_admin(client, test_settings)
+    teacher_payload = problem_payload("teacher-limits")
+    teacher_payload.update(
+        {"code_length_limit": 32, "time_limit": 0.5, "memory_limit": 64}
+    )
+    assert (await client.post("/api/problems/", json=teacher_payload)).status_code == 200
+
+    await client.post("/api/auth/logout")
+    await register_and_login(client, "student-author")
+
+    for field, value in (
+        ("code_length_limit", 100),
+        ("time_limit", 2),
+        ("memory_limit", 256),
+    ):
+        attempted_create = problem_payload(f"student-{field}")
+        attempted_create[field] = value
+        response = await client.post("/api/problems/", json=attempted_create)
+        assert response.status_code == 403
+        assert response.json()["msg"] == "only teachers can set problem resource limits"
+
+    attempted_update = problem_payload("teacher-limits", "Student edit")
+    attempted_update["memory_limit"] = 512
+    assert (
+        await client.put("/api/problems/teacher-limits", json=attempted_update)
+    ).status_code == 403
+
+    # Students may still edit ordinary problem content, but omitted resource limits
+    # are copied from the stored problem instead of reset to defaults.
+    allowed_update = problem_payload("teacher-limits", "Student content edit")
+    assert (
+        await client.put("/api/problems/teacher-limits", json=allowed_update)
+    ).status_code == 200
+    detail = (await client.get("/api/problems/teacher-limits")).json()["data"]
+    assert detail["code_length_limit"] == 32
+    assert detail["time_limit"] == 0.5
+    assert detail["memory_limit"] == 64
 
 
 @pytest.mark.asyncio
@@ -151,6 +203,7 @@ async def test_rejects_invalid_problem_configurations(client):
     invalid_payloads.append(malformed_sample)
 
     invalid_limits = problem_payload("bad-limits")
+    invalid_limits["code_length_limit"] = 0
     invalid_limits["time_limit"] = 0
     invalid_limits["memory_limit"] = -1
     invalid_payloads.append(invalid_limits)

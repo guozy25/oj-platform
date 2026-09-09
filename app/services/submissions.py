@@ -31,7 +31,12 @@ class SubmissionService:
         if recent["total"] >= 3:
             raise APIError(429, "submission rate limit exceeded")
 
-        await self.problem_repository.get(submission.problem_id)
+        problem = await self.problem_repository.get(submission.problem_id)
+        if len(submission.code) > problem.code_length_limit:
+            raise APIError(
+                400,
+                f"code length exceeds problem limit of {problem.code_length_limit} characters",
+            )
         await LanguageService(self.database).get(submission.language)
 
         submission_id = str(uuid4())
