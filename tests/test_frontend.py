@@ -3,13 +3,15 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from frontend import ui
+from frontend import forms, ui
 from frontend.api_client import APIClientError, OJAPIClient, normalize_base_url
 from frontend.forms import (
     build_problem_payload,
+    generate_unique_problem_id,
     parse_io_pairs,
     parse_tags,
     validate_io_pairs,
+    validate_new_problem_id,
 )
 
 
@@ -242,6 +244,20 @@ def test_structured_io_pairs_reject_invalid_shapes(value):
 
 def test_tags_ignore_empty_items():
     assert parse_tags("one, two, ,three") == ["one", "two", "three"]
+
+
+def test_random_problem_id_skips_existing_candidates(monkeypatch):
+    candidates = iter(["A1B2C3D4", "11223344"])
+    monkeypatch.setattr(forms.secrets, "token_hex", lambda _length: next(candidates))
+
+    generated = generate_unique_problem_id({"PA1B2C3D4", "P1001"})
+
+    assert generated == "P11223344"
+
+
+def test_new_problem_id_duplicate_is_rejected():
+    with pytest.raises(ValueError, match="P1001 已存在"):
+        validate_new_problem_id(" P1001 ", {"P1001", "P1002"})
 
 
 def test_frontend_does_not_import_backend_storage_or_services():

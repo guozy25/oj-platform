@@ -8,7 +8,11 @@ import streamlit as st
 
 from frontend.ai_page import render_ai_page
 from frontend.api_client import APIClientError, OJAPIClient, normalize_base_url
-from frontend.forms import build_problem_payload
+from frontend.forms import (
+    build_problem_payload,
+    generate_unique_problem_id,
+    validate_new_problem_id,
+)
 
 DEFAULT_API_URL = "http://127.0.0.1:8000"
 STATUS_LABELS = {
@@ -268,54 +272,71 @@ def _problem_form(
     initial: dict[str, Any] | None = None,
     lock_id: bool | None = None,
     can_set_resource_limits: bool = False,
+    existing_problem_ids: set[str] | None = None,
 ) -> dict[str, Any] | None:
     data = initial or {}
+    existing_ids = existing_problem_ids or set()
     id_is_locked = initial is not None if lock_id is None else lock_id
     initial_samples = data.get("samples") or [{"input": "", "output": ""}]
     initial_testcases = data.get("testcases") or [{"input": "", "output": ""}]
+    id_widget_key = f"{form_key}_id"
+    if id_widget_key not in st.session_state:
+        st.session_state[id_widget_key] = data.get("id", "")
 
-    st.markdown("#### 样例与测试点数量")
-    st.caption("先选择数量，下方会为每一项生成独立的 input 和 output 输入框。")
-    sample_count_column, testcase_count_column = st.columns(2)
-    sample_count = int(
-        sample_count_column.number_input(
-            "样例数量",
-            min_value=1,
-            max_value=max(20, len(initial_samples)),
-            value=len(initial_samples),
-            step=1,
-            key=f"{form_key}_sample_count",
-        )
-    )
-    testcase_count = int(
-        testcase_count_column.number_input(
-            "测试点数量",
-            min_value=1,
-            max_value=max(100, len(initial_testcases)),
-            value=len(initial_testcases),
-            step=1,
-            key=f"{form_key}_testcase_count",
-        )
-    )
-
-    with st.form(form_key):
+    with st.container(border=True):
         id_column, title_column = st.columns([1, 2])
         problem_id = id_column.text_input(
-            "题目 ID",
-            value=data.get("id", ""),
+            "题目 ID（必填）",
             disabled=id_is_locked,
+            key=id_widget_key,
         )
-        title = title_column.text_input("标题", value=data.get("title", ""))
-        description = st.text_area("题目描述（支持 Markdown）", value=data.get("description", ""))
+        if not id_is_locked:
+            id_column.button(
+                "随机生成未使用的 ID",
+                key=f"{form_key}_generate_id",
+                on_click=lambda: st.session_state.update(
+                    {id_widget_key: generate_unique_problem_id(existing_ids)}
+                ),
+                use_container_width=True,
+            )
+            if problem_id.strip() in existing_ids:
+                id_column.error("该题目 ID 已存在")
+
+        title = title_column.text_input(
+            "标题（必填）", value=data.get("title", ""), key=f"{form_key}_title"
+        )
+        description = st.text_area(
+            "题目描述（必填，支持 Markdown）",
+            value=data.get("description", ""),
+            key=f"{form_key}_description",
+        )
         input_description = st.text_area(
-            "输入说明", value=data.get("input_description", "")
+            "输入说明（必填）",
+            value=data.get("input_description", ""),
+            key=f"{form_key}_input_description",
         )
         output_description = st.text_area(
-            "输出说明", value=data.get("output_description", "")
+            "输出说明（必填）",
+            value=data.get("output_description", ""),
+            key=f"{form_key}_output_description",
         )
-        constraints = st.text_area("数据范围", value=data.get("constraints", ""))
+        constraints = st.text_area(
+            "数据范围（必填）",
+            value=data.get("constraints", ""),
+            key=f"{form_key}_constraints",
+        )
 
-        st.markdown("#### 样例")
+        st.markdown("#### 样例（必填，至少 1 组）")
+        sample_count = int(
+            st.number_input(
+                "样例数量（必填）",
+                min_value=1,
+                max_value=max(20, len(initial_samples)),
+                value=len(initial_samples),
+                step=1,
+                key=f"{form_key}_sample_count",
+            )
+        )
         samples = []
         for index in range(sample_count):
             pair = (
@@ -325,20 +346,30 @@ def _problem_form(
             )
             input_column, output_column = st.columns(2)
             sample_input = input_column.text_area(
-                f"样例 {index + 1} · input",
+                f"样例 {index + 1} · input（必填字段；无输入时内容留空）",
                 value=pair["input"],
                 height=100,
                 key=f"{form_key}_sample_{index}_input",
             )
             sample_output = output_column.text_area(
-                f"样例 {index + 1} · output",
+                f"样例 {index + 1} · output（必填字段；无输出时内容留空）",
                 value=pair["output"],
                 height=100,
                 key=f"{form_key}_sample_{index}_output",
             )
             samples.append({"input": sample_input, "output": sample_output})
 
-        st.markdown("#### 测试点")
+        st.markdown("#### 测试点（必填，至少 1 组）")
+        testcase_count = int(
+            st.number_input(
+                "测试点数量（必填）",
+                min_value=1,
+                max_value=max(100, len(initial_testcases)),
+                value=len(initial_testcases),
+                step=1,
+                key=f"{form_key}_testcase_count",
+            )
+        )
         testcases = []
         for index in range(testcase_count):
             pair = (
@@ -348,52 +379,69 @@ def _problem_form(
             )
             input_column, output_column = st.columns(2)
             testcase_input = input_column.text_area(
-                f"测试点 {index + 1} · input",
+                f"测试点 {index + 1} · input（必填字段；无输入时内容留空）",
                 value=pair["input"],
                 height=100,
                 key=f"{form_key}_testcase_{index}_input",
             )
             testcase_output = output_column.text_area(
-                f"测试点 {index + 1} · output",
+                f"测试点 {index + 1} · output（必填字段；无输出时内容留空）",
                 value=pair["output"],
                 height=100,
                 key=f"{form_key}_testcase_{index}_output",
             )
             testcases.append({"input": testcase_input, "output": testcase_output})
 
-        hint = st.text_area("提示", value=data.get("hint", ""))
-        source = st.text_input("来源", value=data.get("source", ""))
+        hint = st.text_area(
+            "提示（选填）", value=data.get("hint", ""), key=f"{form_key}_hint"
+        )
+        source = st.text_input(
+            "来源（选填）", value=data.get("source", ""), key=f"{form_key}_source"
+        )
         tags = st.text_input(
-            "标签（逗号分隔）", value=", ".join(data.get("tags", []))
+            "标签（选填，逗号分隔）",
+            value=", ".join(data.get("tags", [])),
+            key=f"{form_key}_tags",
         )
         if can_set_resource_limits:
             code_column, limit_column, memory_column = st.columns(3)
             code_length_limit = code_column.number_input(
-                "代码长度限制（字符）",
+                "代码长度限制（必填，字符）",
                 min_value=1,
                 max_value=10_000_000,
                 value=int(data.get("code_length_limit") or 200_000),
+                key=f"{form_key}_code_length_limit",
             )
             time_limit = limit_column.number_input(
-                "时间限制（秒）",
+                "时间限制（必填，秒）",
                 min_value=0.01,
                 max_value=3600.0,
                 value=float(data.get("time_limit") or 3.0),
+                key=f"{form_key}_time_limit",
             )
             memory_limit = memory_column.number_input(
-                "内存限制（MB）",
+                "内存限制（必填，MB）",
                 min_value=1,
                 max_value=65_536,
                 value=int(data.get("memory_limit") or 128),
+                key=f"{form_key}_memory_limit",
             )
         else:
             st.caption("代码长度、运行时间和内存限制由老师设置。")
         author_column, difficulty_column = st.columns(2)
-        author = author_column.text_input("作者", value=data.get("author", ""))
-        difficulty = difficulty_column.text_input(
-            "难度", value=data.get("difficulty", "")
+        author = author_column.text_input(
+            "作者（选填）", value=data.get("author", ""), key=f"{form_key}_author"
         )
-        submitted = st.form_submit_button(button_label, type="primary")
+        difficulty = difficulty_column.text_input(
+            "难度（选填）",
+            value=data.get("difficulty", ""),
+            key=f"{form_key}_difficulty",
+        )
+        submitted = st.button(
+            button_label,
+            type="primary",
+            key=f"{form_key}_submit",
+        )
 
     if not submitted:
         return None
@@ -421,6 +469,8 @@ def _problem_form(
             }
         )
     try:
+        if not id_is_locked:
+            validate_new_problem_id(str(values["id"]), existing_ids)
         return build_problem_payload(values)
     except ValueError as exc:
         st.error(str(exc))
@@ -471,6 +521,7 @@ def _problem_page(user: dict[str, Any]) -> None:
             initial=generated,
             lock_id=False,
             can_set_resource_limits=user.get("role") == "admin",
+            existing_problem_ids={item["id"] for item in problems},
         )
         if payload is not None:
             try:

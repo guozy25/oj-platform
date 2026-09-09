@@ -2,9 +2,23 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 from typing import Any
 
 PROBLEM_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def generate_unique_problem_id(existing_ids: set[str]) -> str:
+    for _ in range(100):
+        candidate = f"P{secrets.token_hex(4).upper()}"
+        if candidate not in existing_ids:
+            return candidate
+    raise RuntimeError("暂时无法生成未使用的题目 ID，请手动填写")
+
+
+def validate_new_problem_id(problem_id: str, existing_ids: set[str]) -> None:
+    if problem_id.strip() in existing_ids:
+        raise ValueError(f"题目 ID {problem_id.strip()} 已存在，请更换后再创建")
 
 
 def parse_io_pairs(value: str, field_name: str) -> list[dict[str, str]]:
