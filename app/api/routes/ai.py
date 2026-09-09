@@ -3,7 +3,13 @@ from fastapi import APIRouter, Request
 from app.api.body import parse_json_body
 from app.api.dependencies.auth import CurrentUserDependency
 from app.core.responses import api_response
-from app.models.ai import ModelConfigUpdate, ProblemTaskCreate, ProblemTaskRefinement
+from app.models.ai import (
+    HabitConfigCreate,
+    HabitConfigUpdate,
+    ModelConfigUpdate,
+    ProblemTaskCreate,
+    ProblemTaskRefinement,
+)
 from app.services.ai_tasks import AITaskService
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -20,6 +26,58 @@ async def update_model_config(request: Request, current_user: CurrentUserDepende
     config = await parse_json_body(request, ModelConfigUpdate)
     data = AITaskService(request.app).configure_model(current_user.user_id, config)
     return api_response(msg="model config updated", data=data)
+
+
+@router.get("/habit-configs/")
+async def list_habit_configs(request: Request, current_user: CurrentUserDependency):
+    data = AITaskService(request.app).list_habit_configs(current_user.user_id)
+    return api_response(data=data)
+
+
+@router.post("/habit-configs/")
+async def create_habit_config(request: Request, current_user: CurrentUserDependency):
+    config = await parse_json_body(request, HabitConfigCreate)
+    data = AITaskService(request.app).create_habit_config(
+        current_user.user_id, config
+    )
+    return api_response(msg="habit config created", data=data)
+
+
+@router.put("/habit-configs/{config_id}")
+async def update_habit_config(
+    config_id: str,
+    request: Request,
+    current_user: CurrentUserDependency,
+):
+    config = await parse_json_body(request, HabitConfigUpdate)
+    data = AITaskService(request.app).update_habit_config(
+        current_user.user_id, config_id, config
+    )
+    return api_response(msg="habit config updated", data=data)
+
+
+@router.put("/habit-configs/{config_id}/select")
+async def select_habit_config(
+    config_id: str,
+    request: Request,
+    current_user: CurrentUserDependency,
+):
+    data = AITaskService(request.app).select_habit_config(
+        current_user.user_id, config_id
+    )
+    return api_response(msg="habit config selected", data=data)
+
+
+@router.delete("/habit-configs/{config_id}")
+async def delete_habit_config(
+    config_id: str,
+    request: Request,
+    current_user: CurrentUserDependency,
+):
+    data = AITaskService(request.app).delete_habit_config(
+        current_user.user_id, config_id
+    )
+    return api_response(msg="habit config deleted", data=data)
 
 
 @router.post("/problem-tasks/")

@@ -21,6 +21,10 @@ def model_config(api_key: str = "super-secret-key") -> dict:
     }
 
 
+def habit_config(name: str, api_key: str = "habit-secret-key") -> dict:
+    return {"name": name, **model_config(api_key)}
+
+
 def generated_draft() -> dict:
     inputs = ["2 3", "0 0", "-5 2", "5 -2", "-5 -2", "10 20", "999 1", "-1000 1000"]
     return {
@@ -103,6 +107,13 @@ async def wait_for_ai_task(app, task_id: str, terminal: set[str] | None = None) 
 async def test_ai_endpoints_require_authentication_before_body_validation(client):
     assert (await client.get("/api/ai/model-config")).status_code == 401
     assert (await client.put("/api/ai/model-config", json={})).status_code == 401
+    assert (await client.get("/api/ai/habit-configs/")).status_code == 401
+    assert (await client.post("/api/ai/habit-configs/", json={})).status_code == 401
+    assert (await client.put("/api/ai/habit-configs/missing", json={})).status_code == 401
+    assert (
+        await client.put("/api/ai/habit-configs/missing/select")
+    ).status_code == 401
+    assert (await client.delete("/api/ai/habit-configs/missing")).status_code == 401
     assert (await client.post("/api/ai/problem-tasks/", json={})).status_code == 401
     assert (await client.get("/api/ai/problem-tasks/missing")).status_code == 401
     assert (
@@ -143,6 +154,83 @@ async def test_model_config_is_validated_and_never_returns_api_key(client):
     }
     assert "super-secret-key" not in configured.text
     assert "super-secret-key" not in (await client.get("/api/ai/model-config")).text
+
+
+@pytest.mark.asyncio
+async def test_habit_configs_can_be_saved_selected_updated_and_deleted(client, app):
+    user_id = (await register(client, "habit-config-user")).json()["data"]["user_id"]
+    await login(client, "habit-config-user", "secret123")
+
+    assert (await client.get("/api/ai/habit-configs/")).json()["data"] == []
+    created = await client.post(
+        "/api/ai/habit-configs/", json=habit_config("日常命题")
+    )
+    assert created.status_code == 200
+    habit = created.json()["data"]
+    config_id = habit["config_id"]
+    assert habit["name"] == "日常命题"
+    assert habit["selected"] is True
+    assert habit["api_key_configured"] is True
+    assert "habit-secret-key" not in created.text
+
+    active = (await client.get("/api/ai/model-config")).json()["data"]
+    assert active["habit_config_id"] == config_id
+    assert active["habit_config_name"] == "日常命题"
+    duplicate = await client.post(
+        "/api/ai/habit-configs/", json=habit_config("日常命题", "other-key")
+    )
+    assert duplicate.status_code == 409
+
+    update = habit_config("低价模型", "")
+    update.pop("api_key")
+    update["model"] = "economy-model"
+    update["input_price"] = 0.25
+    updated = await client.put(f"/api/ai/habit-configs/{config_id}", json=update)
+    assert updated.status_code == 200
+    assert updated.json()["data"]["selected"] is True
+    assert updated.json()["data"]["model"] == "economy-model"
+    assert "habit-secret-key" not in updated.text
+    assert (await client.get("/api/ai/model-config")).json()["data"]["model"] == (
+        "economy-model"
+    )
+    stored = app.state.ai_habit_configs[user_id][config_id]
+    assert stored.config.api_key.get_secret_value() == "habit-secret-key"
+
+    await client.put("/api/ai/model-config", json=model_config("temporary-key"))
+    habits = (await client.get("/api/ai/habit-configs/")).json()["data"]
+    assert habits[0]["selected"] is False
+    selected = await client.put(f"/api/ai/habit-configs/{config_id}/select")
+    assert selected.status_code == 200
+    assert selected.json()["data"]["selected"] is True
+    assert "habit-secret-key" not in selected.text
+
+    deleted = await client.delete(f"/api/ai/habit-configs/{config_id}")
+    assert deleted.status_code == 200
+    assert deleted.json()["data"] == {"config_id": config_id}
+    assert (await client.get("/api/ai/habit-configs/")).json()["data"] == []
+    assert (await client.put(f"/api/ai/habit-configs/{config_id}/select")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_habit_configs_are_user_isolated_and_limited_to_ten(client):
+    await register(client, "habit-limit-user")
+    await login(client, "habit-limit-user", "secret123")
+    for index in range(10):
+        response = await client.post(
+            "/api/ai/habit-configs/", json=habit_config(f"配置 {index}")
+        )
+        assert response.status_code == 200
+
+    overflow = await client.post(
+        "/api/ai/habit-configs/", json=habit_config("第十一个配置")
+    )
+    assert overflow.status_code == 400
+    assert len((await client.get("/api/ai/habit-configs/")).json()["data"]) == 10
+
+    await client.post("/api/auth/logout")
+    await register(client, "other-habit-user")
+    await login(client, "other-habit-user", "secret123")
+    assert (await client.get("/api/ai/habit-configs/")).json()["data"] == []
 
 
 @pytest.mark.asyncio

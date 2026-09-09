@@ -102,6 +102,8 @@ async def test_system_reset_restores_initial_state(client, app, test_settings):
     app.state.judge_tasks[submission_id] = waiting_task
     app.state.ai_task_handles["reset-ai-task"] = waiting_task
     app.state.ai_model_configs[regular_user["user_id"]] = object()
+    app.state.ai_habit_configs[regular_user["user_id"]] = {"habit": object()}
+    app.state.ai_selected_habit_configs[regular_user["user_id"]] = "habit"
 
     reset = await client.post("/api/reset/")
 
@@ -117,6 +119,8 @@ async def test_system_reset_restores_initial_state(client, app, test_settings):
     assert app.state.judge_tasks == {}
     assert app.state.ai_task_handles == {}
     assert app.state.ai_model_configs == {}
+    assert app.state.ai_habit_configs == {}
+    assert app.state.ai_selected_habit_configs == {}
     assert list(test_settings.problems_dir.glob("*.json")) == []
 
     for table in (

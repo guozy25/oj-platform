@@ -18,7 +18,27 @@ TASK_STATUS_LABELS = {
 }
 
 
-def _render_config(client: OJAPIClient, show_error: Callable[[APIClientError], None]) -> bool:
+def _model_config_payload(
+    provider_url: str,
+    model: str,
+    api_key: str,
+    input_price: float,
+    output_price: float,
+    price_unit: int,
+) -> dict[str, Any]:
+    return {
+        "provider_url": provider_url,
+        "model": model,
+        "api_key": api_key,
+        "input_price": input_price,
+        "output_price": output_price,
+        "price_unit": int(price_unit),
+    }
+
+
+def _render_config(
+    client: OJAPIClient, show_error: Callable[[APIClientError], None]
+) -> bool:
     try:
         current = client.get("/api/ai/model-config").data
     except APIClientError as exc:
@@ -27,7 +47,11 @@ def _render_config(client: OJAPIClient, show_error: Callable[[APIClientError], N
 
     configured = bool(current.get("api_key_configured"))
     if configured:
-        st.success(f"已配置模型：{current['model']} · {current['provider_url']}")
+        habit_name = current.get("habit_config_name")
+        suffix = f" · 习惯配置：{habit_name}" if habit_name else ""
+        st.success(
+            f"已选定模型：{current['model']} · {current['provider_url']}{suffix}"
+        )
         st.caption("API Key 仅保存在后端进程内存中，服务重启后需要重新配置。")
     else:
         st.info("请先配置一个兼容 OpenAI Chat Completions 的模型服务。")
@@ -63,29 +87,183 @@ def _render_config(client: OJAPIClient, show_error: Callable[[APIClientError], N
                 min_value=1,
                 value=int(current.get("price_unit", 1_000_000)),
             )
-            saved = st.form_submit_button("保存模型配置", type="primary")
-        if saved:
+            habit_name = st.text_input(
+                "习惯配置名称（保存为习惯配置时必填）",
+                max_chars=100,
+                placeholder="例如：GPT-4o 日常命题",
+            )
+            select_column, save_column = st.columns(2)
+            selected = select_column.form_submit_button(
+                "选定模型配置", type="primary", use_container_width=True
+            )
+            saved_as_habit = save_column.form_submit_button(
+                "保存为习惯配置", type="primary", use_container_width=True
+            )
+        if selected or saved_as_habit:
             if not api_key.strip():
                 st.error("请输入 API Key；出于安全考虑，后端不会回传已经保存的密钥。")
+            elif saved_as_habit and not habit_name.strip():
+                st.error("保存为习惯配置时必须填写配置名称。")
             else:
                 try:
-                    client.put(
-                        "/api/ai/model-config",
-                        json={
-                            "provider_url": provider_url,
-                            "model": model,
-                            "api_key": api_key,
-                            "input_price": input_price,
-                            "output_price": output_price,
-                            "price_unit": int(price_unit),
-                        },
+                    payload = _model_config_payload(
+                        provider_url,
+                        model,
+                        api_key,
+                        input_price,
+                        output_price,
+                        int(price_unit),
                     )
+                    if saved_as_habit:
+                        client.post(
+                            "/api/ai/habit-configs/",
+                            json={"name": habit_name.strip(), **payload},
+                        )
+                    else:
+                        client.put("/api/ai/model-config", json=payload)
                 except APIClientError as exc:
                     show_error(exc)
                 else:
-                    st.session_state.flash = "模型配置已保存"
+                    st.session_state.flash = (
+                        f"习惯配置“{habit_name.strip()}”已保存并选定"
+                        if saved_as_habit
+                        else "模型配置已选定"
+                    )
                     st.rerun()
     return configured
+
+
+def _render_habit_configs(
+    client: OJAPIClient, show_error: Callable[[APIClientError], None]
+) -> None:
+    st.subheader("习惯配置")
+    try:
+        habits = client.get("/api/ai/habit-configs/").data
+    except APIClientError as exc:
+        show_error(exc)
+        return
+
+    st.caption(f"已保存 {len(habits)}/10 个；API Key 不会在页面或接口中显示。")
+    if not habits:
+        st.info("还没有习惯配置，可在上方填写模型参数后保存。")
+        return
+
+    st.dataframe(
+        [
+            {
+                "名称": item["name"],
+                "模型": item["model"],
+                "Provider URL": item["provider_url"],
+                "输入价格": item["input_price"],
+                "输出价格": item["output_price"],
+                "计价单位": item["price_unit"],
+                "状态": "当前使用" if item.get("selected") else "",
+            }
+            for item in habits
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
+    by_id = {item["config_id"]: item for item in habits}
+    default_index = next(
+        (index for index, item in enumerate(habits) if item.get("selected")), 0
+    )
+    config_id = st.selectbox(
+        "选择习惯配置",
+        list(by_id),
+        index=default_index,
+        format_func=lambda value: (
+            f"{by_id[value]['name']} · {by_id[value]['model']}"
+            + ("（当前）" if by_id[value].get("selected") else "")
+        ),
+        key="ai_habit_config_selection",
+    )
+    habit = by_id[config_id]
+    st.caption(
+        f"{habit['provider_url']} · 输入 ${habit['input_price']} / "
+        f"输出 ${habit['output_price']} · 每 {habit['price_unit']} Token"
+    )
+    if st.button(
+        "选用此习惯配置",
+        type="primary",
+        use_container_width=True,
+        key=f"select_habit_{config_id}",
+    ):
+        try:
+            client.put(f"/api/ai/habit-configs/{config_id}/select")
+        except APIClientError as exc:
+            show_error(exc)
+        else:
+            st.session_state.flash = f"已选用习惯配置“{habit['name']}”"
+            st.rerun()
+
+    with st.expander("修改所选习惯配置"):
+        with st.form(f"edit_habit_{config_id}"):
+            name = st.text_input("配置名称", value=habit["name"], max_chars=100)
+            provider_url = st.text_input("Provider URL", value=habit["provider_url"])
+            model = st.text_input("模型名称", value=habit["model"])
+            api_key = st.text_input(
+                "新 API Key（选填）",
+                type="password",
+                help="留空会继续使用该习惯配置原有的密钥。",
+            )
+            first, second, third = st.columns(3)
+            input_price = first.number_input(
+                "输入价格（USD）",
+                min_value=0.0,
+                value=float(habit["input_price"]),
+                format="%.6f",
+            )
+            output_price = second.number_input(
+                "输出价格（USD）",
+                min_value=0.0,
+                value=float(habit["output_price"]),
+                format="%.6f",
+            )
+            price_unit = third.number_input(
+                "计价 Token 单位",
+                min_value=1,
+                value=int(habit["price_unit"]),
+            )
+            updated = st.form_submit_button(
+                "保存习惯配置修改", type="primary", use_container_width=True
+            )
+        if updated:
+            payload = {
+                "name": name.strip(),
+                "provider_url": provider_url,
+                "model": model,
+                "input_price": input_price,
+                "output_price": output_price,
+                "price_unit": int(price_unit),
+            }
+            if api_key.strip():
+                payload["api_key"] = api_key
+            try:
+                client.put(f"/api/ai/habit-configs/{config_id}", json=payload)
+            except APIClientError as exc:
+                show_error(exc)
+            else:
+                st.session_state.flash = f"习惯配置“{name.strip()}”已更新"
+                st.rerun()
+
+        delete_confirmed = st.checkbox(
+            f"确认删除习惯配置“{habit['name']}”",
+            key=f"delete_habit_confirm_{config_id}",
+        )
+        if st.button(
+            "删除习惯配置",
+            disabled=not delete_confirmed,
+            key=f"delete_habit_{config_id}",
+        ):
+            try:
+                client.delete(f"/api/ai/habit-configs/{config_id}")
+            except APIClientError as exc:
+                show_error(exc)
+            else:
+                st.session_state.pop("ai_habit_config_selection", None)
+                st.session_state.flash = f"习惯配置“{habit['name']}”已删除"
+                st.rerun()
 
 
 def _create_task(
@@ -441,6 +619,7 @@ def render_ai_page(
         "根据知识点和难度生成完整题目；后端会运行标准解、重算输出，并用典型错误解检查测试点。"
     )
     configured = _render_config(client, show_error)
+    _render_habit_configs(client, show_error)
     _create_task(client, problems, show_error, configured)
     _render_history(client, show_error)
     _render_active_task(client, problems, show_error, configured)

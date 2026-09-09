@@ -9,11 +9,13 @@ from typing import Protocol
 from uuid import uuid4
 
 from fastapi import FastAPI
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from app.core.errors import APIError
 from app.models.ai import (
     GeneratedProblemDraft,
+    HabitConfigCreate,
+    HabitConfigUpdate,
     ModelConfigUpdate,
     ProblemTaskCreate,
     ProblemTaskRefinement,
@@ -111,6 +113,37 @@ class UsageAccumulator:
         }
 
 
+MAX_HABIT_CONFIGS = 10
+
+
+@dataclass(frozen=True, slots=True)
+class StoredHabitConfig:
+    config_id: str
+    name: str
+    config: ModelConfigUpdate
+
+    def public_dict(self, *, selected: bool) -> dict:
+        return {
+            "config_id": self.config_id,
+            "name": self.name,
+            **self.config.public_dict(),
+            "selected": selected,
+        }
+
+
+def _model_config_from(
+    value: HabitConfigCreate | HabitConfigUpdate, api_key: SecretStr
+) -> ModelConfigUpdate:
+    return ModelConfigUpdate(
+        provider_url=value.provider_url,
+        model=value.model,
+        api_key=api_key,
+        input_price=value.input_price,
+        output_price=value.output_price,
+        price_unit=value.price_unit,
+    )
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -189,13 +222,112 @@ class AITaskService:
 
     def configure_model(self, user_id: str, config: ModelConfigUpdate) -> dict:
         self.application.state.ai_model_configs[user_id] = config
+        self.application.state.ai_selected_habit_configs.pop(user_id, None)
         return config.public_dict()
 
     def get_model_config(self, user_id: str) -> dict:
         config = self.application.state.ai_model_configs.get(user_id)
         if config is None:
             return {"api_key_configured": False}
-        return config.public_dict()
+        data = config.public_dict()
+        selected_id = self.application.state.ai_selected_habit_configs.get(user_id)
+        habit = self.application.state.ai_habit_configs.get(user_id, {}).get(
+            selected_id
+        )
+        if habit is not None:
+            data.update(
+                {"habit_config_id": habit.config_id, "habit_config_name": habit.name}
+            )
+        return data
+
+    def list_habit_configs(self, user_id: str) -> list[dict]:
+        selected_id = self.application.state.ai_selected_habit_configs.get(user_id)
+        return [
+            habit.public_dict(selected=habit.config_id == selected_id)
+            for habit in self.application.state.ai_habit_configs.get(
+                user_id, {}
+            ).values()
+        ]
+
+    def create_habit_config(
+        self, user_id: str, request: HabitConfigCreate
+    ) -> dict:
+        habits: dict[str, StoredHabitConfig] = (
+            self.application.state.ai_habit_configs.setdefault(user_id, {})
+        )
+        self._ensure_unique_habit_name(habits, request.name)
+        if len(habits) >= MAX_HABIT_CONFIGS:
+            raise APIError(400, "at most 10 habit configs are allowed")
+        config_id = f"habit-{uuid4()}"
+        stored = StoredHabitConfig(
+            config_id=config_id,
+            name=request.name,
+            config=_model_config_from(request, request.api_key),
+        )
+        habits[config_id] = stored
+        self._select_habit(user_id, stored)
+        return stored.public_dict(selected=True)
+
+    def update_habit_config(
+        self,
+        user_id: str,
+        config_id: str,
+        request: HabitConfigUpdate,
+    ) -> dict:
+        habits = self.application.state.ai_habit_configs.get(user_id, {})
+        existing = habits.get(config_id)
+        if existing is None:
+            raise APIError(404, "habit config not found")
+        self._ensure_unique_habit_name(habits, request.name, exclude_id=config_id)
+        api_key = request.api_key or existing.config.api_key
+        updated = StoredHabitConfig(
+            config_id=config_id,
+            name=request.name,
+            config=_model_config_from(request, api_key),
+        )
+        habits[config_id] = updated
+        selected = (
+            self.application.state.ai_selected_habit_configs.get(user_id) == config_id
+        )
+        if selected:
+            self._select_habit(user_id, updated)
+        return updated.public_dict(selected=selected)
+
+    def select_habit_config(self, user_id: str, config_id: str) -> dict:
+        habit = self.application.state.ai_habit_configs.get(user_id, {}).get(config_id)
+        if habit is None:
+            raise APIError(404, "habit config not found")
+        self._select_habit(user_id, habit)
+        return habit.public_dict(selected=True)
+
+    def delete_habit_config(self, user_id: str, config_id: str) -> dict:
+        habits = self.application.state.ai_habit_configs.get(user_id, {})
+        habit = habits.pop(config_id, None)
+        if habit is None:
+            raise APIError(404, "habit config not found")
+        if self.application.state.ai_selected_habit_configs.get(user_id) == config_id:
+            self.application.state.ai_selected_habit_configs.pop(user_id, None)
+        if not habits:
+            self.application.state.ai_habit_configs.pop(user_id, None)
+        return {"config_id": config_id}
+
+    @staticmethod
+    def _ensure_unique_habit_name(
+        habits: dict[str, StoredHabitConfig],
+        name: str,
+        *,
+        exclude_id: str | None = None,
+    ) -> None:
+        normalized = name.casefold()
+        if any(
+            habit.config_id != exclude_id and habit.name.casefold() == normalized
+            for habit in habits.values()
+        ):
+            raise APIError(409, "habit config name already exists")
+
+    def _select_habit(self, user_id: str, habit: StoredHabitConfig) -> None:
+        self.application.state.ai_model_configs[user_id] = habit.config
+        self.application.state.ai_selected_habit_configs[user_id] = habit.config_id
 
     async def create_task(self, task: ProblemTaskCreate, user: CurrentUser) -> dict:
         config = self.application.state.ai_model_configs.get(user.user_id)

@@ -34,3 +34,5 @@ class SystemResetService:
             )
             await self.application.state.database.reset()
             self.application.state.ai_model_configs.clear()
+            self.application.state.ai_habit_configs.clear()
+            self.application.state.ai_selected_habit_configs.clear()

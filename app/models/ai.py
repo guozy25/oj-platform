@@ -19,6 +19,10 @@ NonEmptyLimitedText = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=10_000),
 ]
+HabitConfigName = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
+]
 
 
 class ModelConfigUpdate(BaseModel):
@@ -63,6 +67,41 @@ class ModelConfigUpdate(BaseModel):
             "output_price": self.output_price,
             "price_unit": self.price_unit,
         }
+
+
+class HabitConfigCreate(ModelConfigUpdate):
+    name: HabitConfigName
+
+
+class HabitConfigUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: HabitConfigName
+    provider_url: str = Field(min_length=1, max_length=2_000)
+    model: str = Field(min_length=1, max_length=200)
+    api_key: SecretStr | None = None
+    input_price: float = Field(default=0, ge=0, le=1_000_000, allow_inf_nan=False)
+    output_price: float = Field(default=0, ge=0, le=1_000_000, allow_inf_nan=False)
+    price_unit: int = Field(default=1_000_000, gt=0, le=1_000_000_000)
+
+    @field_validator("provider_url")
+    @classmethod
+    def validate_provider_url(cls, value: str) -> str:
+        return ModelConfigUpdate.validate_provider_url(value)
+
+    @field_validator("model")
+    @classmethod
+    def normalize_model(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_optional_api_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        if not value.get_secret_value().strip():
+            raise ValueError("api_key must not be empty when provided")
+        return SecretStr(value.get_secret_value().strip())
 
 
 class ProblemTaskCreate(BaseModel):

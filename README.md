@@ -101,6 +101,9 @@ Streamlit 前端页面：
 AI 智能命题接口：
 
 - `GET` / `PUT /api/ai/model-config`：查询脱敏配置、更新 OpenAI 兼容模型配置；
+- `GET` / `POST /api/ai/habit-configs/`：列出或保存当前用户的习惯配置，最多 10 个；
+- `PUT` / `DELETE /api/ai/habit-configs/{config_id}`：修改或删除自己的习惯配置；
+- `PUT /api/ai/habit-configs/{config_id}/select`：直接选用习惯配置作为当前命题模型；
 - `POST /api/ai/problem-tasks/`：创建异步命题或已有题目改进任务；
 - `GET /api/ai/problem-tasks/`：查询本人最近的命题任务，管理员可查看全部；
 - `GET /api/ai/problem-tasks/{task_id}`：查询实时进度、结果和 Token/费用；
@@ -109,8 +112,9 @@ AI 智能命题接口：
 - `POST /api/ai/problem-tasks/{task_id}/refinements/`：基于指定版本追加反馈并生成下一版；
 - `PUT /api/ai/problem-tasks/{task_id}/cancel`：真正取消模型调用和后续验证。
 
-模型配置按用户隔离，API Key 只保存在后端进程内存中，既不写入数据库，也不会通过
-查询响应、日志或错误信息返回；服务重启后需重新配置。Provider URL 可填写兼容 OpenAI
+模型配置和最多 10 个命名习惯配置均按用户隔离，API Key 只保存在后端进程内存中，既不写入
+数据库，也不会通过查询响应、日志或错误信息返回；服务重启后当前配置和习惯配置均需重新配置。
+用户可保存并直接选用习惯配置，修改时若 API Key 留空则保留原密钥。Provider URL 可填写兼容 OpenAI
 Chat Completions 的 API 根地址或完整的 `/chat/completions` 地址。Token 用量优先采用模型
 响应中的实际值；提供商不返回用量时，系统会以字符数估算，并在页面明确标注。
 
