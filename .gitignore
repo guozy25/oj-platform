@@ -1,19 +1,55 @@
+# Operating-system and editor files
 .DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local configuration and secrets
 .env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.pem
+*.key
+
+# Python environments and bytecode
 .venv/
+venv/
+env/
+__pypackages__/
 __pycache__/
 *.py[cod]
+
+# Tests, linters, type checkers and coverage
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.hypothesis/
+.tox/
+.nox/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 
+# Packaging and build output
+build/
+dist/
+*.egg-info/
+pip-wheel-metadata/
+
+# Logs
+*.log
+
 # Runtime state
-data/*.db
-data/*.db-*
+data/*
+!data/.gitkeep
 runtime/
+problems/*
+!problems/.gitkeep
 
 # User submissions and compiler output must never be committed.
 *.out
 *.exe
-
