@@ -26,6 +26,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         application.state.background_tasks = set()
         application.state.judge_tasks = {}
         application.state.ai_task_handles = {}
+        application.state.ai_task_cancel_reasons = {}
+        application.state.shutting_down = False
         application.state.ai_model_configs = {}
         application.state.ai_habit_configs = {}
         application.state.ai_selected_habit_configs = {}
@@ -48,8 +50,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            application.state.shutting_down = True
             tasks = list(application.state.background_tasks)
             for task in tasks:
+                task_id = next(
+                    (
+                        task_id
+                        for task_id, handle in application.state.ai_task_handles.items()
+                        if handle is task
+                    ),
+                    None,
+                )
+                if task_id is not None:
+                    application.state.ai_task_cancel_reasons[task_id] = "server_shutdown"
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)

@@ -25,6 +25,7 @@ def _model_config_payload(
     input_price: float,
     output_price: float,
     price_unit: int,
+    max_output_tokens: int,
 ) -> dict[str, Any]:
     return {
         "provider_url": provider_url,
@@ -33,6 +34,7 @@ def _model_config_payload(
         "input_price": input_price,
         "output_price": output_price,
         "price_unit": int(price_unit),
+        "max_output_tokens": int(max_output_tokens),
     }
 
 
@@ -69,7 +71,7 @@ def _render_config(
                 type="password",
                 help="密钥不会显示在响应、日志或页面中。每次更新配置都需要重新填写。",
             )
-            first, second, third = st.columns(3)
+            first, second, third, fourth = st.columns(4)
             input_price = first.number_input(
                 "输入价格（USD）",
                 min_value=0.0,
@@ -86,6 +88,14 @@ def _render_config(
                 "计价 Token 单位",
                 min_value=1,
                 value=int(current.get("price_unit", 1_000_000)),
+            )
+            max_output_tokens = fourth.number_input(
+                "单次最大输出 Token",
+                min_value=256,
+                max_value=128_000,
+                value=int(current.get("max_output_tokens", 12_000)),
+                step=256,
+                help="限制单次命题请求的最大输出；越大越可能生成更完整内容，但费用和耗时也更高。",
             )
             habit_name = st.text_input(
                 "习惯配置名称（保存为习惯配置时必填）",
@@ -113,6 +123,7 @@ def _render_config(
                         input_price,
                         output_price,
                         int(price_unit),
+                        int(max_output_tokens),
                     )
                     if saved_as_habit:
                         client.post(
@@ -157,6 +168,7 @@ def _render_habit_configs(
                 "输入价格": item["input_price"],
                 "输出价格": item["output_price"],
                 "计价单位": item["price_unit"],
+                "最大输出 Token": item.get("max_output_tokens", 12_000),
                 "状态": "当前使用" if item.get("selected") else "",
             }
             for item in habits
@@ -207,7 +219,7 @@ def _render_habit_configs(
                 type="password",
                 help="留空会继续使用该习惯配置原有的密钥。",
             )
-            first, second, third = st.columns(3)
+            first, second, third, fourth = st.columns(4)
             input_price = first.number_input(
                 "输入价格（USD）",
                 min_value=0.0,
@@ -225,6 +237,13 @@ def _render_habit_configs(
                 min_value=1,
                 value=int(habit["price_unit"]),
             )
+            max_output_tokens = fourth.number_input(
+                "单次最大输出 Token",
+                min_value=256,
+                max_value=128_000,
+                value=int(habit.get("max_output_tokens", 12_000)),
+                step=256,
+            )
             updated = st.form_submit_button(
                 "保存习惯配置修改", type="primary", use_container_width=True
             )
@@ -236,6 +255,7 @@ def _render_habit_configs(
                 "input_price": input_price,
                 "output_price": output_price,
                 "price_unit": int(price_unit),
+                "max_output_tokens": int(max_output_tokens),
             }
             if api_key.strip():
                 payload["api_key"] = api_key
@@ -271,8 +291,14 @@ def _create_task(
     problems: list[dict[str, str]],
     show_error: Callable[[APIClientError], None],
     configured: bool,
+    running_task_id: str | None,
 ) -> None:
     st.subheader("命题需求")
+    if running_task_id:
+        st.info(
+            f"已有智能命题任务正在运行：{running_task_id}。"
+            "请在当前任务完成或中断后再创建新任务。"
+        )
     problem_options = [""] + [item["id"] for item in problems]
     with st.form("ai_problem_task"):
         knowledge = st.text_input(
@@ -297,7 +323,7 @@ def _create_task(
         submitted = st.form_submit_button(
             "开始智能命题",
             type="primary",
-            disabled=not configured,
+            disabled=not configured or running_task_id is not None,
         )
     if submitted:
         if not knowledge.strip() or not details.strip():
@@ -314,11 +340,23 @@ def _create_task(
         try:
             response = client.post("/api/ai/problem-tasks/", json=payload)
         except APIClientError as exc:
-            show_error(exc)
+            conflict_task_id = _conflicting_task_id(exc)
+            if conflict_task_id:
+                st.session_state.active_ai_task_id = conflict_task_id
+                st.warning("已有任务正在运行，已自动恢复该任务的进度页面。")
+            else:
+                show_error(exc)
         else:
             st.session_state.active_ai_task_id = response.data["task_id"]
             st.session_state.flash = "智能命题任务已创建"
             st.rerun()
+
+
+def _conflicting_task_id(error: APIClientError) -> str | None:
+    if error.status_code != 409 or not isinstance(error.data, dict):
+        return None
+    task_id = error.data.get("task_id")
+    return task_id if isinstance(task_id, str) and task_id else None
 
 
 def _render_usage(usage: dict | None) -> None:
@@ -335,10 +373,19 @@ def _render_usage(usage: dict | None) -> None:
         st.caption(f"费用按照模型返回的 Token 用量和每 {usage.get('price_unit')} Token 单价计算。")
 
 
+def _render_partial_output(partial_output: str | None) -> None:
+    if not partial_output:
+        return
+    with st.expander("查看已收到的部分模型输出", expanded=False):
+        st.code(partial_output, language="json")
+
+
 def _render_result(
+    client: OJAPIClient,
     result: dict,
     problems: list[dict[str, str]],
     *,
+    show_error: Callable[[APIClientError], None],
     artifact_key: str,
 ) -> None:
     problem = result["problem"]
@@ -356,15 +403,13 @@ def _render_result(
     st.markdown("#### 数据范围")
     st.markdown(problem["constraints"])
 
-    metrics = st.columns(4)
+    metrics = st.columns(2)
     metrics[0].metric("样例", validation["sample_count"])
     metrics[1].metric("测试点", validation["testcase_count"])
-    metrics[2].metric("典型错误解", validation["mutants_total"])
-    metrics[3].metric("已识别错误解", validation["mutants_killed"])
 
     quality = validation.get("quality_gate", {})
     if quality.get("passed"):
-        st.success("测试点质量门槛已通过：输入独立、规模分层，且全部典型错误解均被识别。")
+        st.success("测试点质量门槛已通过：输入独立、规模分层，且覆盖目的具体。")
         quality_metrics = st.columns(4)
         quality_metrics[0].metric("边界场景", quality["boundary_case_count"])
         quality_metrics[1].metric("大规模/性能场景", quality["stress_case_count"])
@@ -386,9 +431,6 @@ def _render_result(
     for warning in validation.get("warnings", []):
         st.warning(warning)
 
-    if validation.get("mutant_kill_cases"):
-        with st.expander("查看错误解 × 测试点验证矩阵"):
-            st.json(validation["mutant_kill_cases"])
 
     with st.expander("查看样例与测试点 JSON"):
         st.json({"samples": problem["samples"], "testcases": problem["testcases"]})
@@ -397,6 +439,30 @@ def _render_result(
 
     existing_ids = {item["id"] for item in problems}
     operation = "编辑题目" if problem["id"] in existing_ids else "新建题目"
+    accepted_key = f"accepted_ai_{artifact_key}"
+    if st.session_state.get(accepted_key):
+        st.success(f"题目 {problem['id']} 已接受并加入题库。")
+    elif st.button(
+        "接受并更新题目" if operation == "编辑题目" else "接受新题",
+        type="primary",
+        key=f"accept_ai_{artifact_key}",
+        help="直接将当前已通过自动校验的版本写入题库。",
+    ):
+        payload = dict(problem)
+        payload.pop("public_cases", None)
+        try:
+            (
+                client.put(f"/api/problems/{problem['id']}", json=payload)
+                if operation == "编辑题目"
+                else client.post("/api/problems/", json=payload)
+            )
+        except APIClientError as exc:
+            show_error(exc)
+        else:
+            st.session_state[accepted_key] = True
+            st.session_state.flash = f"题目 {problem['id']} 已加入题库"
+            st.rerun()
+
     if st.button(
         f"导入到“{operation}”页面",
         type="primary",
@@ -407,7 +473,10 @@ def _render_result(
             "active_ai_task_id", problem["id"]
         )
         st.session_state.pending_problem_operation = operation
-        st.session_state.navigation = "题目"
+        # The navigation radio already exists in this Streamlit run, so changing
+        # its keyed state here raises StreamlitAPIException. Apply it before the
+        # widget is created on the next rerun instead.
+        st.session_state.pending_navigation = "题目"
         st.rerun()
     st.download_button(
         "下载生成结果 JSON",
@@ -476,8 +545,10 @@ def _render_revision_workspace(
     )
     st.caption(f"当前查看第 {selected_revision} 版 · {source_label}")
     _render_result(
+        client,
         selected["result"],
         problems,
+        show_error=show_error,
         artifact_key=f"{task_id}_{selected_revision}",
     )
 
@@ -562,8 +633,10 @@ def _render_active_task(
                 st.rerun()
     elif status == "failed":
         st.error(task.get("error_info") or "智能命题失败")
+        _render_partial_output(task.get("partial_output"))
     elif status == "cancelled":
         st.warning("任务已被中断，后端不会继续调用模型或执行验证。")
+        _render_partial_output(task.get("partial_output"))
     if task.get("result"):
         _render_revision_workspace(client, task, problems, show_error, configured)
 
@@ -575,15 +648,9 @@ def _render_active_task(
 
 
 def _render_history(
-    client: OJAPIClient,
-    show_error: Callable[[APIClientError], None],
+    tasks: list[dict[str, Any]],
 ) -> None:
     with st.expander("最近的命题任务"):
-        try:
-            tasks = client.get("/api/ai/problem-tasks/").data
-        except APIClientError as exc:
-            show_error(exc)
-            return
         if not tasks:
             st.caption("还没有历史任务。")
             return
@@ -613,13 +680,31 @@ def render_ai_page(
     client: OJAPIClient,
     problems: list[dict[str, str]],
     show_error: Callable[[APIClientError], None],
+    current_user_id: str,
 ) -> None:
     st.header("AI 智能命题")
     st.caption(
-        "根据知识点和难度生成完整题目；后端会运行标准解、重算输出，并用典型错误解检查测试点。"
+        "根据知识点和难度生成完整题目；后端会运行标准解并重算样例与测试点输出。"
     )
     configured = _render_config(client, show_error)
     _render_habit_configs(client, show_error)
-    _create_task(client, problems, show_error, configured)
-    _render_history(client, show_error)
+    try:
+        tasks = client.get("/api/ai/problem-tasks/").data
+    except APIClientError as exc:
+        show_error(exc)
+        tasks = []
+    running_task = next(
+        (
+            task
+            for task in tasks
+            if task.get("user_id") == current_user_id
+            and task.get("status") in {"pending", "running"}
+        ),
+        None,
+    )
+    running_task_id = running_task["task_id"] if running_task else None
+    if running_task_id:
+        st.session_state.active_ai_task_id = running_task_id
+    _create_task(client, problems, show_error, configured, running_task_id)
+    _render_history(tasks)
     _render_active_task(client, problems, show_error, configured)

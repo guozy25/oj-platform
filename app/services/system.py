@@ -21,6 +21,16 @@ class SystemResetService:
         async with self.application.state.system_reset_lock:
             tasks = list(self.application.state.background_tasks)
             for task in tasks:
+                task_id = next(
+                    (
+                        task_id
+                        for task_id, handle in self.application.state.ai_task_handles.items()
+                        if handle is task
+                    ),
+                    None,
+                )
+                if task_id is not None:
+                    self.application.state.ai_task_cancel_reasons[task_id] = "system_reset"
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)

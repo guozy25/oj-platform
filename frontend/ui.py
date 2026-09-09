@@ -175,10 +175,16 @@ def _render_auth() -> None:
 
 
 def _navigation_pages(user: dict[str, Any]) -> list[str]:
-    pages = ["我的信息", "题目", "提交记录", "AI 智能命题"]
+    pages = ["我的信息", "题目"]
     if user.get("role") == "admin":
-        pages.extend(["用户管理", "访问审计"])
+        pages.extend(["提交记录", "AI 智能命题", "用户管理", "访问审计"])
     return pages
+
+
+def _apply_pending_navigation(pages: list[str]) -> None:
+    pending_navigation = st.session_state.pop("pending_navigation", None)
+    if pending_navigation in pages:
+        st.session_state.navigation = pending_navigation
 
 
 def _sidebar_navigation(user: dict[str, Any]) -> str:
@@ -186,6 +192,7 @@ def _sidebar_navigation(user: dict[str, Any]) -> str:
     st.sidebar.write(f"**{user['username']}**")
     st.sidebar.caption(f"角色：{user['role']}\n\nID：{user['user_id']}")
     pages = _navigation_pages(user)
+    _apply_pending_navigation(pages)
     if st.session_state.get("navigation") not in {None, *pages}:
         st.session_state.navigation = "题目"
     page = st.sidebar.radio("导航", pages, key="navigation")
@@ -311,8 +318,9 @@ def _render_problem_submission(problem_id: str) -> None:
         submission_id = response.data["submission_id"]
         st.session_state.last_submission_id = submission_id
         st.session_state.active_submission_id = submission_id
+        st.session_state[f"problem_submission_selection_{problem_id}"] = submission_id
         st.success(f"已提交，ID：{submission_id}")
-        st.info("可前往“提交记录”页面查看或刷新评测结果。")
+        st.info("新提交已加入下方本题提交记录。")
 
 
 def _problem_form(
@@ -559,6 +567,7 @@ def _problem_page(user: dict[str, Any]) -> None:
         )
         if _render_problem_detail(selected):
             _render_problem_submission(selected)
+            _render_problem_submission_history(selected, user)
         return
 
     if operation == "新建题目":
@@ -689,7 +698,7 @@ def _render_submission_detail(submission_id: str, is_admin: bool) -> None:
         "满分", detail["counts"] if detail["counts"] is not None else "—"
     )
     if status == "pending":
-        st.info("评测任务正在排队或执行，请点击“查询 / 刷新”获取最新状态。")
+        st.info("评测任务正在排队或执行，请稍后刷新提交记录。")
     if detail.get("error_info"):
         st.error(f"评测错误：{detail['error_info']}")
     if detail.get("compile_info") is not None:
@@ -730,6 +739,85 @@ def _render_submission_detail(submission_id: str, is_admin: bool) -> None:
                 st.dataframe(details, use_container_width=True, hide_index=True)
             else:
                 st.info("暂无测试点日志。")
+
+
+def _problem_submission_query_params(
+    problem_id: str, user: dict[str, Any], page: int
+) -> dict[str, Any]:
+    return {
+        "user_id": user["user_id"],
+        "problem_id": problem_id,
+        "page": page,
+        "page_size": 20,
+    }
+
+
+def _render_problem_submission_history(
+    problem_id: str, user: dict[str, Any]
+) -> None:
+    st.divider()
+    st.subheader("我对这道题的提交记录")
+    st.caption("只显示当前登录用户对本题的提交。")
+    refresh_column, page_column = st.columns([3, 1])
+    refresh_column.button(
+        "刷新本题提交记录",
+        key=f"refresh_problem_submissions_{problem_id}",
+        use_container_width=True,
+    )
+    page = int(
+        page_column.number_input(
+            "页码",
+            min_value=1,
+            value=1,
+            step=1,
+            key=f"problem_submissions_page_{problem_id}",
+        )
+    )
+    try:
+        listing = _client().get(
+            "/api/submissions/",
+            params=_problem_submission_query_params(problem_id, user, page),
+        ).data
+    except APIClientError as exc:
+        _show_error(exc)
+        return
+
+    submissions = listing["submissions"]
+    st.write(f"共 {listing['total']} 条，当前为第 {page} 页")
+    if not submissions:
+        st.info("当前用户还没有对这道题提交过代码。")
+        return
+
+    display_rows = [
+        {
+            "提交 ID": item["submission_id"],
+            "状态": STATUS_LABELS.get(item["status"], item["status"]),
+            "得分": item.get("score") if item.get("score") is not None else "—",
+            "满分": item.get("counts") if item.get("counts") is not None else "—",
+        }
+        for item in submissions
+    ]
+    st.dataframe(display_rows, use_container_width=True, hide_index=True)
+
+    submissions_by_id = {item["submission_id"]: item for item in submissions}
+    submission_ids = list(submissions_by_id)
+    selection_key = f"problem_submission_selection_{problem_id}"
+    if st.session_state.get(selection_key) not in submission_ids:
+        st.session_state[selection_key] = submission_ids[0]
+
+    def format_submission(submission_id: str) -> str:
+        status = submissions_by_id[submission_id]["status"]
+        return f"{submission_id} · {STATUS_LABELS.get(status, status)}"
+
+    selected_submission_id = st.selectbox(
+        "查看本页提交详情",
+        submission_ids,
+        key=selection_key,
+        format_func=format_submission,
+    )
+    _render_submission_detail(
+        selected_submission_id, is_admin=user.get("role") == "admin"
+    )
 
 
 def _submissions_page(user: dict[str, Any]) -> None:
@@ -903,6 +991,8 @@ def run() -> None:
         "提交记录": lambda: _submissions_page(user),
         "用户管理": _users_page,
         "访问审计": _audit_page,
-        "AI 智能命题": lambda: render_ai_page(_client(), ai_problems, _show_error),
+        "AI 智能命题": lambda: render_ai_page(
+            _client(), ai_problems, _show_error, user["user_id"]
+        ),
     }
     renderers[page]()

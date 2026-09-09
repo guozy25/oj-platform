@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS ai_tasks (
     result TEXT,
     usage TEXT,
     error_info TEXT,
+    partial_output TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -152,6 +153,12 @@ class Database:
         async with self.connection() as connection:
             await connection.execute("PRAGMA journal_mode = WAL")
             await connection.executescript(SCHEMA)
+            columns = {
+                row[1]
+                for row in await connection.execute_fetchall("PRAGMA table_info(ai_tasks)")
+            }
+            if "partial_output" not in columns:
+                await connection.execute("ALTER TABLE ai_tasks ADD COLUMN partial_output TEXT")
             await connection.commit()
         await self.ensure_initial_admin()
         await self.ensure_default_languages()

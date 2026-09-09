@@ -25,8 +25,11 @@ from app.repositories.problems import ProblemRepository
 from app.services.ai_provider import AIProviderError, ProviderResult
 from app.services.ai_validation import DraftValidationError, validate_generated_draft
 
-SYSTEM_PROMPT = """你是一名严谨的程序设计竞赛命题人。只输出一个 JSON 对象，不要输出 Markdown
-代码围栏或额外解释。题目必须自洽、可判定，并适合在线评测。标准解和错误解必须是完整的 Python 3
+SYSTEM_PROMPT = """你是一名严谨的程序设计竞赛命题人。只输出严格合法的 JSON 对象，不要输出 Markdown
+代码围栏或额外解释。所有字段值都必须是完整的 JSON 值；字符串必须从冒号后的第一个字符到结尾
+使用英文双引号包裹，并正确转义换行和双引号。禁止使用 Python 表达式、字符串拼接、重复运算、
+变量、注释、省略号或伪 JSON，例如禁止：\"input\": \"1\\n\" + \"a\" * 1000。题目必须自洽、
+可判定，并适合在线评测。标准解必须是完整的 Python 3
 程序，只能使用标准库并通过标准输入输出交互。不得读写文件、访问网络、创建子进程或依赖随机结果。"""
 
 OUTPUT_SCHEMA = """输出严格采用以下结构：
@@ -50,14 +53,14 @@ OUTPUT_SCHEMA = """输出严格采用以下结构：
     "difficulty": "入门/简单/中等/困难"
   },
   "reference_solution": "完整 Python 3 标准解",
-  "incorrect_solutions": ["典型错误解 1", "典型错误解 2"],
   "testcase_purposes": ["与每个测试点一一对应的覆盖目的"]
 }
-必须提供 1 至 3 个样例、8 至 20 个互不重复且不复用样例输入的测试点、2 至 4 个彼此不同且
-不同于标准解的典型错误解。每个测试点的覆盖目的必须具体且互不重复；至少 2 个明确的边界场景、
-至少 1 个大规模/性能/复杂度场景，并同时覆盖小、中、大三档输入规模。整套测试点必须杀死每个
-典型错误解，且至少 2 个不同测试点能够识别错误解。所有输入规模必须适合在配置的时间限制内由
-标准解完成。"""
+必须提供 1 至 3 个样例、8 至 20 个互不重复的测试点。每个测试点的覆盖目的必须具体且互不重复；
+至少 2 个明确的边界场景、至少 1 个大规模/性能/复杂度场景，并同时覆盖小、中、大三档输入规模。
+大规模测试点也必须保持信息量，禁止使用超长的单字符或极短片段重复串（例如一万个 a）充当测试数据；
+请生成有变化的具体输入，不要用重复填充来凑长度；每个样例或测试点的 input 不得超过 16384 字节。
+所有输入规模必须适合在配置的时间限制内由标准解完成。输出前必须检查整段内容可以被标准 JSON
+解析器直接解析。"""
 
 
 class Provider(Protocol):
@@ -141,6 +144,7 @@ def _model_config_from(
         input_price=value.input_price,
         output_price=value.output_price,
         price_unit=value.price_unit,
+        max_output_tokens=value.max_output_tokens,
     )
 
 
@@ -178,7 +182,13 @@ def _initial_prompt(requirement: str, existing_problem: dict | None) -> str:
 def _repair_prompt(previous_content: str, feedback: str) -> str:
     return (
         f"{OUTPUT_SCHEMA}\n\n上一次草稿未通过自动验证。验证反馈：{feedback}\n"
-        "请修复整份草稿并重新输出完整 JSON。不要降低测试点数量或删除错误解。\n"
+        "请修复整份草稿并重新输出完整 JSON。不要降低测试点数量。"
+        "所有字符串必须完整地放在英文双引号内，"
+        "并正确转义换行和双引号。禁止使用 +、*、变量、注释、省略号或任何 Python 表达式；例如禁止"
+        "将 `\"input\": \"1\\n\" + \"a\" * 1000` 当作 JSON。"
+        "也不要生成超长单字符或短片段重复输入（例如一万个 a）；大规模测试点必须有实际数据变化，"
+        "且每个 input 不得超过 16384 字节。"
+        "输出前必须确认可被标准 JSON 解析器直接解析。\n"
         f"上一次输出：\n{previous_content[:1_500_000]}"
     )
 
@@ -192,7 +202,6 @@ def _refinement_prompt(
     previous_draft = {
         "problem": previous_result["problem"],
         "reference_solution": previous_result["reference_solution"],
-        "incorrect_solutions": previous_result.get("incorrect_solutions", []),
         "testcase_purposes": previous_result.get("validation", {}).get(
             "testcase_purposes", []
         ),
@@ -336,13 +345,17 @@ class AITaskService:
 
         active = await self.database.fetch_one(
             """
-            SELECT task_id FROM ai_tasks
+            SELECT task_id, status FROM ai_tasks
             WHERE user_id = ? AND status IN ('pending', 'running') LIMIT 1
             """,
             (user.user_id,),
         )
         if active is not None:
-            raise APIError(409, "an AI task is already running for this user")
+            raise APIError(
+                409,
+                "an AI task is already running for this user",
+                {"task_id": active["task_id"], "status": active["status"]},
+            )
 
         existing_problem = None
         if task.problem_id is not None:
@@ -485,14 +498,18 @@ class AITaskService:
             raise APIError(400, "model config is required")
         active = await self.database.fetch_one(
             """
-            SELECT task_id FROM ai_tasks
+            SELECT task_id, status FROM ai_tasks
             WHERE user_id = ? AND task_id != ?
               AND status IN ('pending', 'running') LIMIT 1
             """,
             (user.user_id, task_id),
         )
         if active is not None:
-            raise APIError(409, "an AI task is already running for this user")
+            raise APIError(
+                409,
+                "an AI task is already running for this user",
+                {"task_id": active["task_id"], "status": active["status"]},
+            )
 
         latest_revision = await self._latest_revision(task)
         if latest_revision == 0:
@@ -544,6 +561,7 @@ class AITaskService:
 
         handle = self.application.state.ai_task_handles.get(task_id)
         if handle is not None and not handle.done():
+            self.application.state.ai_task_cancel_reasons[task_id] = "user"
             handle.cancel()
             await asyncio.gather(handle, return_exceptions=True)
             latest = await self.database.fetch_one(
@@ -632,6 +650,7 @@ class AITaskService:
             "result": json.loads(row["result"]) if row["result"] else None,
             "usage": json.loads(row["usage"]) if row["usage"] else None,
             "error_info": row["error_info"],
+            "partial_output": row["partial_output"] or "",
             "latest_revision": latest_revision,
             "can_refine": can_refine,
         }
@@ -681,12 +700,14 @@ class AITaskService:
         usage: dict | None = None,
         result: dict | None = None,
         error_info: str | None = None,
+        partial_output: str | None = None,
     ) -> None:
         await self.database.execute(
             """
             UPDATE ai_tasks
             SET status = ?, progress = ?, usage = COALESCE(?, usage),
-                result = COALESCE(?, result), error_info = ?, updated_at = ?
+                result = COALESCE(?, result), error_info = ?,
+                partial_output = COALESCE(?, partial_output), updated_at = ?
             WHERE task_id = ?
             """,
             (
@@ -695,6 +716,7 @@ class AITaskService:
                 json.dumps(usage) if usage is not None else None,
                 json.dumps(result, ensure_ascii=False) if result is not None else None,
                 error_info,
+                partial_output,
                 _now(),
                 task_id,
             ),
@@ -789,7 +811,53 @@ class AITaskService:
                     ),
                     usage=usage.as_dict(config),
                 )
-                provider_result = await provider.complete(SYSTEM_PROMPT, prompt)
+                last_progress_at = 0.0
+
+                async def save_progress(partial: str, estimated_output: int) -> None:
+                    nonlocal last_progress_at
+                    now = asyncio.get_running_loop().time()
+                    if now - last_progress_at < 0.35:
+                        return
+                    last_progress_at = now
+                    progress_usage = usage.as_dict(config)
+                    progress_usage["estimated"] = True
+                    progress_usage["output_tokens"] += estimated_output
+                    progress_usage["total_tokens"] = (
+                        progress_usage["input_tokens"] + progress_usage["output_tokens"]
+                    )
+                    await self._update(
+                        task_id,
+                        status="running",
+                        progress=f"正在接收模型输出（约 {estimated_output} Token）",
+                        usage=progress_usage,
+                        partial_output=partial,
+                    )
+
+                stream_method = getattr(provider, "complete_stream", None)
+                if stream_method is not None:
+                    try:
+                        provider_result = await stream_method(
+                            SYSTEM_PROMPT, prompt, on_progress=save_progress
+                        )
+                    except AIProviderError as exc:
+                        if (
+                            attempt == 0
+                            and "generated input exceeds" in str(exc)
+                        ):
+                            usage.add(
+                                ProviderResult(
+                                    content=exc.partial_content,
+                                    input_tokens=exc.input_tokens,
+                                    output_tokens=exc.output_tokens,
+                                    estimated=exc.estimated,
+                                )
+                            )
+                            previous_content = exc.partial_content
+                            prompt = _repair_prompt(previous_content, str(exc))
+                            continue
+                        raise
+                else:
+                    provider_result = await provider.complete(SYSTEM_PROMPT, prompt)
                 usage.add(provider_result)
                 previous_content = provider_result.content
                 await self._update(
@@ -797,6 +865,7 @@ class AITaskService:
                     status="running",
                     progress="正在校验题目结构",
                     usage=usage.as_dict(config),
+                    partial_output=provider_result.content,
                 )
                 try:
                     draft = GeneratedProblemDraft.model_validate(
@@ -827,7 +896,11 @@ class AITaskService:
                 )
                 try:
                     validated = await validate_generated_draft(
-                        draft, self.application.state.settings
+                        draft,
+                        self.application.state.settings,
+                        allow_sample_testcase_overlap=(
+                            not is_refinement and expected_problem_id is None
+                        ),
                     )
                 except DraftValidationError as exc:
                     if attempt == 0:
@@ -838,7 +911,6 @@ class AITaskService:
                 result = {
                     "problem": validated.problem.model_dump(mode="json"),
                     "reference_solution": draft.reference_solution,
-                    "incorrect_solutions": draft.incorrect_solutions,
                     "validation": validated.validation,
                     "ready_for_import": True,
                 }
@@ -853,14 +925,50 @@ class AITaskService:
                 return
             raise DraftValidationError("AI problem could not be validated")
         except asyncio.CancelledError:
-            await self._update(
-                task_id,
-                status="cancelled",
-                progress="任务已中断",
-                usage=usage.as_dict(config),
-            )
+            reason = self.application.state.ai_task_cancel_reasons.pop(task_id, None)
+            if reason == "server_shutdown" or self.application.state.shutting_down:
+                await self._update(
+                    task_id,
+                    status="failed",
+                    progress="服务关闭，任务已终止",
+                    usage=usage.as_dict(config),
+                    error_info="AI task interrupted by server shutdown",
+                )
+            elif reason == "system_reset":
+                await self._update(
+                    task_id,
+                    status="cancelled",
+                    progress="系统重置，任务已中断",
+                    usage=usage.as_dict(config),
+                )
+            else:
+                await self._update(
+                    task_id,
+                    status="cancelled",
+                    progress="任务已中断",
+                    usage=usage.as_dict(config),
+                )
             raise
         except (AIProviderError, DraftValidationError) as exc:
+            if isinstance(exc, AIProviderError):
+                if exc.input_tokens or exc.output_tokens:
+                    usage.add(
+                        ProviderResult(
+                            content=exc.partial_content,
+                            input_tokens=exc.input_tokens,
+                            output_tokens=exc.output_tokens,
+                            estimated=exc.estimated,
+                        )
+                    )
+                await self._update(
+                    task_id,
+                    status="failed",
+                    progress="命题失败（已保存部分输出）",
+                    usage=usage.as_dict(config),
+                    error_info=str(exc),
+                    partial_output=exc.partial_content,
+                )
+                return
             await self._update(
                 task_id,
                 status="failed",

@@ -23,6 +23,8 @@ HabitConfigName = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
 ]
+DEFAULT_AI_MAX_OUTPUT_TOKENS = 12_000
+MAX_AI_OUTPUT_TOKENS = 128_000
 
 
 class ModelConfigUpdate(BaseModel):
@@ -34,6 +36,9 @@ class ModelConfigUpdate(BaseModel):
     input_price: float = Field(default=0, ge=0, le=1_000_000, allow_inf_nan=False)
     output_price: float = Field(default=0, ge=0, le=1_000_000, allow_inf_nan=False)
     price_unit: int = Field(default=1_000_000, gt=0, le=1_000_000_000)
+    max_output_tokens: int = Field(
+        default=DEFAULT_AI_MAX_OUTPUT_TOKENS, ge=256, le=MAX_AI_OUTPUT_TOKENS
+    )
 
     @field_validator("provider_url")
     @classmethod
@@ -66,6 +71,7 @@ class ModelConfigUpdate(BaseModel):
             "input_price": self.input_price,
             "output_price": self.output_price,
             "price_unit": self.price_unit,
+            "max_output_tokens": self.max_output_tokens,
         }
 
 
@@ -83,6 +89,9 @@ class HabitConfigUpdate(BaseModel):
     input_price: float = Field(default=0, ge=0, le=1_000_000, allow_inf_nan=False)
     output_price: float = Field(default=0, ge=0, le=1_000_000, allow_inf_nan=False)
     price_unit: int = Field(default=1_000_000, gt=0, le=1_000_000_000)
+    max_output_tokens: int = Field(
+        default=DEFAULT_AI_MAX_OUTPUT_TOKENS, ge=256, le=MAX_AI_OUTPUT_TOKENS
+    )
 
     @field_validator("provider_url")
     @classmethod
@@ -125,7 +134,9 @@ class GeneratedProblemDraft(BaseModel):
 
     problem: ProblemInput
     reference_solution: str = Field(min_length=1, max_length=100_000)
-    incorrect_solutions: list[str] = Field(min_length=2, max_length=4)
+    # Kept optional so older saved revisions remain readable. New prompts no
+    # longer ask the model to generate incorrect solutions.
+    incorrect_solutions: list[str] = Field(default_factory=list, max_length=4)
     testcase_purposes: list[str] = Field(min_length=8, max_length=20)
 
     @model_validator(mode="after")
@@ -139,8 +150,6 @@ class GeneratedProblemDraft(BaseModel):
             raise ValueError("testcase_purposes must align with testcases")
         if any(not purpose.strip() for purpose in self.testcase_purposes):
             raise ValueError("testcase purposes must not be empty")
-        if any(not solution.strip() for solution in self.incorrect_solutions):
-            raise ValueError("incorrect solutions must not be empty")
         if self.problem.time_limit is None or self.problem.memory_limit is None:
             raise ValueError("AI problem must define time and memory limits")
         if not self.problem.difficulty.strip() or not self.problem.tags:

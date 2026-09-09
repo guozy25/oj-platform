@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from frontend import forms, ui
+from frontend import ai_page, forms, ui
 from frontend.api_client import APIClientError, OJAPIClient, normalize_base_url
 from frontend.forms import (
     build_problem_payload,
@@ -150,7 +150,7 @@ def test_successful_problem_mutation_schedules_fresh_list_and_reruns(monkeypatch
     assert flash_messages == ["saved"]
 
 
-def test_code_submission_is_not_a_separate_navigation_page_for_any_role():
+def test_student_navigation_embeds_submission_features_under_problems():
     student_pages = ui._navigation_pages({"role": "user"})
     teacher_pages = ui._navigation_pages({"role": "admin"})
 
@@ -158,8 +158,51 @@ def test_code_submission_is_not_a_separate_navigation_page_for_any_role():
     assert "题目" in teacher_pages
     assert "提交代码" not in student_pages
     assert "提交代码" not in teacher_pages
-    assert "提交记录" in student_pages
+    assert "提交记录" not in student_pages
     assert "提交记录" in teacher_pages
+    assert "AI 智能命题" not in student_pages
+    assert "AI 智能命题" in teacher_pages
+
+
+def test_pending_navigation_is_applied_before_sidebar_widget(monkeypatch):
+    class SessionState(dict):
+        def __setattr__(self, name, value):
+            self[name] = value
+
+    state = SessionState(pending_navigation="题目", navigation="AI 智能命题")
+    monkeypatch.setattr(ui, "st", SimpleNamespace(session_state=state))
+
+    ui._apply_pending_navigation(["题目", "AI 智能命题"])
+
+    assert state["navigation"] == "题目"
+    assert "pending_navigation" not in state
+
+
+def test_problem_submission_query_is_scoped_to_current_user_and_problem():
+    params = ui._problem_submission_query_params(
+        "P1001", {"user_id": "student-1", "role": "user"}, 2
+    )
+
+    assert params == {
+        "user_id": "student-1",
+        "problem_id": "P1001",
+        "page": 2,
+        "page_size": 20,
+    }
+
+
+def test_ai_task_conflict_recovers_the_running_task_id():
+    error = APIClientError(
+        "an AI task is already running for this user",
+        status_code=409,
+        data={"task_id": "ai-running", "status": "running"},
+    )
+
+    assert ai_page._conflicting_task_id(error) == "ai-running"
+    assert (
+        ai_page._conflicting_task_id(APIClientError("conflict", status_code=409))
+        is None
+    )
 
 
 @pytest.mark.parametrize("value", ["localhost:8000", "ftp://example.com", "http://u:p@host"])

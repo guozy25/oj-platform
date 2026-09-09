@@ -18,11 +18,22 @@ def model_config(api_key: str = "super-secret-key") -> dict:
         "input_price": 2.0,
         "output_price": 4.0,
         "price_unit": 1_000,
+        "max_output_tokens": 12_000,
     }
 
 
 def habit_config(name: str, api_key: str = "habit-secret-key") -> dict:
     return {"name": name, **model_config(api_key)}
+
+
+async def login_as_initial_admin(client, test_settings) -> dict:
+    response = await login(
+        client,
+        test_settings.initial_admin_username,
+        test_settings.initial_admin_password,
+    )
+    assert response.status_code == 200
+    return response.json()["data"]
 
 
 def generated_draft() -> dict:
@@ -131,9 +142,38 @@ async def test_ai_endpoints_require_authentication_before_body_validation(client
 
 
 @pytest.mark.asyncio
-async def test_model_config_is_validated_and_never_returns_api_key(client):
-    await register(client, "ai-config-user")
-    await login(client, "ai-config-user", "secret123")
+async def test_ai_endpoints_reject_regular_users_before_body_validation(client):
+    await register(client, "ai-forbidden-user")
+    await login(client, "ai-forbidden-user", "secret123")
+
+    responses = [
+        await client.get("/api/ai/model-config"),
+        await client.put("/api/ai/model-config", json={}),
+        await client.get("/api/ai/habit-configs/"),
+        await client.post("/api/ai/habit-configs/", json={}),
+        await client.put("/api/ai/habit-configs/missing", json={}),
+        await client.put("/api/ai/habit-configs/missing/select"),
+        await client.delete("/api/ai/habit-configs/missing"),
+        await client.post("/api/ai/problem-tasks/", json={}),
+        await client.get("/api/ai/problem-tasks/"),
+        await client.get("/api/ai/problem-tasks/missing"),
+        await client.get("/api/ai/problem-tasks/missing/revisions/"),
+        await client.get("/api/ai/problem-tasks/missing/revisions/1"),
+        await client.post(
+            "/api/ai/problem-tasks/missing/refinements/",
+            json={"feedback": "改简单"},
+        ),
+        await client.put("/api/ai/problem-tasks/missing/cancel"),
+    ]
+
+    assert all(response.status_code == 403 for response in responses)
+
+
+@pytest.mark.asyncio
+async def test_model_config_is_validated_and_never_returns_api_key(
+    client, test_settings
+):
+    await login_as_initial_admin(client, test_settings)
 
     missing = await client.get("/api/ai/model-config")
     assert missing.json()["data"] == {"api_key_configured": False}
@@ -151,15 +191,17 @@ async def test_model_config_is_validated_and_never_returns_api_key(client):
         "input_price": 2.0,
         "output_price": 4.0,
         "price_unit": 1_000,
+        "max_output_tokens": 12_000,
     }
     assert "super-secret-key" not in configured.text
     assert "super-secret-key" not in (await client.get("/api/ai/model-config")).text
 
 
 @pytest.mark.asyncio
-async def test_habit_configs_can_be_saved_selected_updated_and_deleted(client, app):
-    user_id = (await register(client, "habit-config-user")).json()["data"]["user_id"]
-    await login(client, "habit-config-user", "secret123")
+async def test_habit_configs_can_be_saved_selected_updated_and_deleted(
+    client, app, test_settings
+):
+    user_id = (await login_as_initial_admin(client, test_settings))["user_id"]
 
     assert (await client.get("/api/ai/habit-configs/")).json()["data"] == []
     created = await client.post(
@@ -212,9 +254,15 @@ async def test_habit_configs_can_be_saved_selected_updated_and_deleted(client, a
 
 
 @pytest.mark.asyncio
-async def test_habit_configs_are_user_isolated_and_limited_to_ten(client):
-    await register(client, "habit-limit-user")
-    await login(client, "habit-limit-user", "secret123")
+async def test_habit_configs_are_admin_isolated_and_limited_to_ten(
+    client, test_settings
+):
+    await login_as_initial_admin(client, test_settings)
+    second_admin = await client.post(
+        "/api/users/admin",
+        json={"username": "other-ai-admin", "password": "secret123"},
+    )
+    assert second_admin.status_code == 200
     for index in range(10):
         response = await client.post(
             "/api/ai/habit-configs/", json=habit_config(f"配置 {index}")
@@ -228,15 +276,15 @@ async def test_habit_configs_are_user_isolated_and_limited_to_ten(client):
     assert len((await client.get("/api/ai/habit-configs/")).json()["data"]) == 10
 
     await client.post("/api/auth/logout")
-    await register(client, "other-habit-user")
-    await login(client, "other-habit-user", "secret123")
+    await login(client, "other-ai-admin", "secret123")
     assert (await client.get("/api/ai/habit-configs/")).json()["data"] == []
 
 
 @pytest.mark.asyncio
-async def test_generated_problem_is_verified_costed_and_ready_for_import(client, app):
-    await register(client, "ai-author")
-    await login(client, "ai-author", "secret123")
+async def test_generated_problem_is_verified_costed_and_ready_for_import(
+    client, app, test_settings
+):
+    await login_as_initial_admin(client, test_settings)
     await client.put("/api/ai/model-config", json=model_config())
     provider = StaticProvider(None, [json.dumps(generated_draft(), ensure_ascii=False)])
     app.state.ai_provider_factory = lambda _config: provider
@@ -257,20 +305,15 @@ async def test_generated_problem_is_verified_costed_and_ready_for_import(client,
     assert data["can_refine"] is True
     assert data["latest_revision"] == 1
     assert data["result"]["ready_for_import"] is True
-    assert len(data["result"]["incorrect_solutions"]) == 2
     assert data["result"]["problem"]["samples"][0]["output"] == "3"
     assert data["result"]["problem"]["testcases"][2]["output"] == "-3"
     validation = data["result"]["validation"]
     assert validation["reference_outputs_verified"] is True
     assert validation["source_safety_checked"] is True
-    assert validation["mutants_killed"] == validation["mutants_total"] == 2
-    assert validation["surviving_mutants"] == []
     assert validation["quality_gate"]["passed"] is True
     assert validation["quality_gate"]["boundary_case_count"] >= 2
     assert validation["quality_gate"]["stress_case_count"] >= 1
     assert validation["quality_gate"]["effective_testcase_count"] >= 2
-    assert validation["quality_gate"]["mutant_kill_rate"] == 1.0
-    assert len(validation["mutant_kill_cases"]) == 2
     assert validation["warnings"] == []
     assert data["usage"] == {
         "input_tokens": 100,
@@ -301,9 +344,10 @@ async def test_generated_problem_is_verified_costed_and_ready_for_import(client,
 
 
 @pytest.mark.asyncio
-async def test_completed_task_supports_multiple_validated_refinement_rounds(client, app):
-    await register(client, "ai-multiturn-user")
-    await login(client, "ai-multiturn-user", "secret123")
+async def test_completed_task_supports_multiple_validated_refinement_rounds(
+    client, app, test_settings
+):
+    await login_as_initial_admin(client, test_settings)
     await client.put("/api/ai/model-config", json=model_config())
 
     first = generated_draft()
@@ -436,9 +480,10 @@ async def test_completed_task_supports_multiple_validated_refinement_rounds(clie
 
 
 @pytest.mark.asyncio
-async def test_invalid_first_draft_is_repaired_and_usage_is_accumulated(client, app):
-    await register(client, "ai-repair-user")
-    await login(client, "ai-repair-user", "secret123")
+async def test_invalid_first_draft_is_repaired_and_usage_is_accumulated(
+    client, app, test_settings
+):
+    await login_as_initial_admin(client, test_settings)
     await client.put("/api/ai/model-config", json=model_config())
     provider = StaticProvider(
         None,
@@ -461,9 +506,10 @@ async def test_invalid_first_draft_is_repaired_and_usage_is_accumulated(client, 
 
 
 @pytest.mark.asyncio
-async def test_weak_testcase_draft_is_repaired_with_quality_feedback(client, app):
-    await register(client, "ai-quality-repair-user")
-    await login(client, "ai-quality-repair-user", "secret123")
+async def test_weak_testcase_draft_is_repaired_with_quality_feedback(
+    client, app, test_settings
+):
+    await login_as_initial_admin(client, test_settings)
     await client.put("/api/ai/model-config", json=model_config())
     weak = generated_draft()
     weak["problem"]["testcases"][1]["input"] = weak["problem"]["testcases"][0][
@@ -492,40 +538,44 @@ async def test_weak_testcase_draft_is_repaired_with_quality_feedback(client, app
 
 
 @pytest.mark.asyncio
-async def test_surviving_mutant_fails_after_the_repair_attempt(client, app):
-    await register(client, "ai-quality-failure-user")
-    await login(client, "ai-quality-failure-user", "secret123")
+async def test_problem_without_incorrect_solutions_is_accepted(
+    client, app, test_settings
+):
+    await login_as_initial_admin(client, test_settings)
     await client.put("/api/ai/model-config", json=model_config())
-    weak = generated_draft()
-    weak["incorrect_solutions"][1] = (
-        "a, b = map(int, input().split())\nresult = a + b\nprint(result)"
-    )
-    provider = StaticProvider(None, [json.dumps(weak, ensure_ascii=False)])
+    draft = generated_draft()
+    draft.pop("incorrect_solutions")
+    provider = StaticProvider(None, [json.dumps(draft, ensure_ascii=False)])
     app.state.ai_provider_factory = lambda _config: provider
 
     created = await client.post(
-        "/api/ai/problem-tasks/", json={"requirement": "不能放行无法区分错误解的题目"}
+        "/api/ai/problem-tasks/", json={"requirement": "只需要标准解和可靠测试点"}
     )
     task_id = created.json()["data"]["task_id"]
     await wait_for_ai_task(app, task_id)
     detail = (await client.get(f"/api/ai/problem-tasks/{task_id}")).json()["data"]
 
-    assert detail["status"] == "failed"
-    assert "典型错误解未被任何测试点识别" in detail["error_info"]
-    assert provider.calls == 2
-    assert "典型错误解未被任何测试点识别" in provider.prompts[1]
+    assert detail["status"] == "completed"
+    assert provider.calls == 1
 
 
 @pytest.mark.asyncio
-async def test_quality_gate_rejects_sample_reuse_weak_purposes_and_duplicate_mutants(
+async def test_quality_gate_rejects_sample_reuse_and_weak_purposes(
     test_settings,
 ):
+    test_settings.ensure_directories()
     sample_reuse = generated_draft()
     sample_reuse["problem"]["testcases"][0]["input"] = "1 2"
     with pytest.raises(DraftValidationError, match="不得直接复用样例输入"):
         await validate_generated_draft(
             GeneratedProblemDraft.model_validate(sample_reuse), test_settings
         )
+    allowed = await validate_generated_draft(
+        GeneratedProblemDraft.model_validate(sample_reuse),
+        test_settings,
+        allow_sample_testcase_overlap=True,
+    )
+    assert allowed.validation["quality_gate"]["sample_testcase_overlap"] == 1
 
     weak_purposes = generated_draft()
     weak_purposes["testcase_purposes"] = [
@@ -536,20 +586,27 @@ async def test_quality_gate_rejects_sample_reuse_weak_purposes_and_duplicate_mut
             GeneratedProblemDraft.model_validate(weak_purposes), test_settings
         )
 
-    duplicate_mutants = generated_draft()
-    duplicate_mutants["incorrect_solutions"][1] = duplicate_mutants[
-        "incorrect_solutions"
-    ][0]
-    with pytest.raises(DraftValidationError, match="错误解之间存在重复"):
+    repetitive = generated_draft()
+    repetitive["problem"]["testcases"][0]["input"] = "a" * 300
+    with pytest.raises(DraftValidationError, match="高度重复"):
         await validate_generated_draft(
-            GeneratedProblemDraft.model_validate(duplicate_mutants), test_settings
+            GeneratedProblemDraft.model_validate(repetitive), test_settings
+        )
+
+    repeated_sequence = generated_draft()
+    repeated_sequence["problem"]["testcases"][0]["input"] = "1 2 3 4 " * 100
+    with pytest.raises(DraftValidationError, match="高度重复"):
+        await validate_generated_draft(
+            GeneratedProblemDraft.model_validate(repeated_sequence), test_settings
         )
 
 
+
 @pytest.mark.asyncio
-async def test_generated_code_with_side_effects_is_rejected_without_leaking_key(client, app):
-    await register(client, "ai-safety-user")
-    await login(client, "ai-safety-user", "secret123")
+async def test_generated_code_with_side_effects_is_rejected_without_leaking_key(
+    client, app, test_settings
+):
+    await login_as_initial_admin(client, test_settings)
     await client.put("/api/ai/model-config", json=model_config())
     unsafe = generated_draft()
     unsafe["reference_solution"] = "import os\nos.remove('important-file')"
@@ -570,9 +627,15 @@ async def test_generated_code_with_side_effects_is_rejected_without_leaking_key(
 
 
 @pytest.mark.asyncio
-async def test_task_owner_admin_permissions_and_missing_config(client, app, test_settings):
-    owner = (await register(client, "ai-owner")).json()["data"]
-    await login(client, "ai-owner", "secret123")
+async def test_other_admin_can_view_but_not_refine_an_ai_task(
+    client, app, test_settings
+):
+    owner = await login_as_initial_admin(client, test_settings)
+    second_admin = await client.post(
+        "/api/users/admin",
+        json={"username": "ai-other-admin", "password": "secret123"},
+    )
+    assert second_admin.status_code == 200
     without_config = await client.post(
         "/api/ai/problem-tasks/", json={"requirement": "尚未配置模型"}
     )
@@ -591,24 +654,7 @@ async def test_task_owner_admin_permissions_and_missing_config(client, app, test
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as other_client:
-        await register(other_client, "ai-other")
-        await login(other_client, "ai-other", "secret123")
-        assert (await other_client.get(f"/api/ai/problem-tasks/{task_id}")).status_code == 403
-        assert (
-            await other_client.get(f"/api/ai/problem-tasks/{task_id}/revisions/")
-        ).status_code == 403
-        assert (
-            await other_client.post(
-                f"/api/ai/problem-tasks/{task_id}/refinements/",
-                json={"feedback": "不能修改别人的任务"},
-            )
-        ).status_code == 403
-        await other_client.post("/api/auth/logout")
-        await login(
-            other_client,
-            test_settings.initial_admin_username,
-            test_settings.initial_admin_password,
-        )
+        await login(other_client, "ai-other-admin", "secret123")
         visible = await other_client.get(f"/api/ai/problem-tasks/{task_id}")
         assert visible.status_code == 200
         assert visible.json()["data"]["task_id"] == task_id
@@ -619,16 +665,15 @@ async def test_task_owner_admin_permissions_and_missing_config(client, app, test
         assert (
             await other_client.post(
                 f"/api/ai/problem-tasks/{task_id}/refinements/",
-                json={"feedback": "管理员不应冒用任务拥有者的模型配置"},
+                json={"feedback": "其他管理员不应冒用任务拥有者的模型配置"},
             )
         ).status_code == 403
     assert owner["user_id"]
 
 
 @pytest.mark.asyncio
-async def test_cancel_actually_stops_running_provider(client, app):
-    await register(client, "ai-cancel-user")
-    await login(client, "ai-cancel-user", "secret123")
+async def test_cancel_actually_stops_running_provider(client, app, test_settings):
+    await login_as_initial_admin(client, test_settings)
     await client.put("/api/ai/model-config", json=model_config())
     started = asyncio.Event()
     app.state.ai_provider_factory = lambda config: BlockingProvider(config, started)
@@ -642,6 +687,7 @@ async def test_cancel_actually_stops_running_provider(client, app):
         "/api/ai/problem-tasks/", json={"requirement": "不能并发创建第二个任务"}
     )
     assert duplicate.status_code == 409
+    assert duplicate.json()["data"] == {"task_id": task_id, "status": "running"}
     refining = await client.post(
         f"/api/ai/problem-tasks/{task_id}/refinements/",
         json={"feedback": "任务运行中不能追加修改"},
