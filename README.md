@@ -33,6 +33,8 @@ password: admintestpassword
 ```
 
 健康检查地址为 `GET /api/health`，交互式 API 文档地址为 `/docs`。
+管理员可调用 `POST /api/reset/` 恢复自动测试所需的初始环境。该操作会取消后台任务，
+清空用户、题目、提交、日志、AI 任务和自定义语言，恢复默认语言与初始管理员，并注销所有会话。
 
 当前已实现用户阶段接口：
 
@@ -114,5 +116,23 @@ Linux，并提供 `python3` 和支持 C++14 的 `g++`。服务重启时会自动
 pytest
 ruff check .
 ```
+
+## Linux 验收
+
+最终验收环境需要 Linux、Python 3.10+、GCC 9+ 和 C++14 支持。在 Ubuntu/Debian 上可执行：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv g++
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+./scripts/linux_acceptance.sh
+```
+
+验收脚本会检查操作系统及编译器版本，执行 Ruff 和完整测试集，然后真正启动 Uvicorn，
+通过 HTTP 完成健康检查、用户登录、题目创建、Python/C++14 评测和系统重置。仓库中的
+`Linux acceptance` GitHub Actions 工作流会在 Ubuntu 24.04 的 Python 3.10 与 3.13 上执行
+同一套流程，也可在 GitHub Actions 页面手动运行。
 
 运行数据库、评测临时文件、虚拟环境和密钥配置均已加入 `.gitignore`，不得提交到仓库。

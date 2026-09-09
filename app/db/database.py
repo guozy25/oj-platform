@@ -170,7 +170,21 @@ class Database:
 
     async def ensure_default_languages(self) -> None:
         created_at = datetime.now(timezone.utc).isoformat()
-        defaults = (
+        defaults = self._default_languages(created_at)
+        async with self.connection() as connection:
+            await connection.executemany(
+                """
+                INSERT OR IGNORE INTO languages (
+                    name, file_ext, compile_cmd, run_cmd,
+                    time_limit, memory_limit, created_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+                """,
+                defaults,
+            )
+            await connection.commit()
+
+    def _default_languages(self, created_at: str) -> tuple[tuple[Any, ...], ...]:
+        return (
             (
                 "python",
                 ".py",
@@ -190,17 +204,59 @@ class Database:
                 created_at,
             ),
         )
+
+    async def reset(self) -> None:
+        """Atomically restore all database-backed state to its initial contents."""
+        now = datetime.now(timezone.utc)
+        password_hash = await asyncio.to_thread(hash_password, self.settings.initial_admin_password)
+        admin_id = str(uuid4())
+
         async with self.connection() as connection:
-            await connection.executemany(
-                """
-                INSERT OR IGNORE INTO languages (
-                    name, file_ext, compile_cmd, run_cmd,
-                    time_limit, memory_limit, created_by, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
-                """,
-                defaults,
-            )
-            await connection.commit()
+            await connection.execute("BEGIN IMMEDIATE")
+            try:
+                # Delete dependants first because several audit tables intentionally
+                # retain strict foreign keys instead of using cascading deletion.
+                for table in (
+                    "access_logs",
+                    "testcase_results",
+                    "ai_tasks",
+                    "submissions",
+                    "role_change_logs",
+                    "sessions",
+                    "languages",
+                    "users",
+                ):
+                    await connection.execute(f"DELETE FROM {table}")
+                await connection.execute(
+                    "DELETE FROM sqlite_sequence WHERE name IN ('access_logs', 'role_change_logs')"
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO users (
+                        user_id, username, password_hash, role, join_time, created_at
+                    ) VALUES (?, ?, ?, 'admin', ?, ?)
+                    """,
+                    (
+                        admin_id,
+                        self.settings.initial_admin_username,
+                        password_hash,
+                        now.date().isoformat(),
+                        now.isoformat(),
+                    ),
+                )
+                await connection.executemany(
+                    """
+                    INSERT INTO languages (
+                        name, file_ext, compile_cmd, run_cmd,
+                        time_limit, memory_limit, created_by, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)
+                    """,
+                    self._default_languages(now.isoformat()),
+                )
+                await connection.commit()
+            except BaseException:
+                await connection.rollback()
+                raise
 
     async def fetch_one(self, query: str, parameters: Iterable[Any] = ()) -> aiosqlite.Row | None:
         async with self.connection() as connection:

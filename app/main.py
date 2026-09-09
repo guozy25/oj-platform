@@ -27,6 +27,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         application.state.judge_tasks = {}
         application.state.ai_task_handles = {}
         application.state.ai_model_configs = {}
+        application.state.system_reset_lock = asyncio.Lock()
         application.state.ai_provider_factory = AIProviderClient
         application.state.ai_task_semaphore = asyncio.Semaphore(2)
         await database.execute(
