@@ -174,13 +174,20 @@ def _render_auth() -> None:
                     st.rerun()
 
 
+def _navigation_pages(user: dict[str, Any]) -> list[str]:
+    pages = ["我的信息", "题目", "提交记录", "AI 智能命题"]
+    if user.get("role") == "admin":
+        pages.extend(["用户管理", "访问审计"])
+    return pages
+
+
 def _sidebar_navigation(user: dict[str, Any]) -> str:
     st.sidebar.divider()
     st.sidebar.write(f"**{user['username']}**")
     st.sidebar.caption(f"角色：{user['role']}\n\nID：{user['user_id']}")
-    pages = ["我的信息", "题目", "提交代码", "提交记录", "AI 智能命题"]
-    if user.get("role") == "admin":
-        pages.extend(["用户管理", "访问审计"])
+    pages = _navigation_pages(user)
+    if st.session_state.get("navigation") not in {None, *pages}:
+        st.session_state.navigation = "题目"
     page = st.sidebar.radio("导航", pages, key="navigation")
 
     if st.sidebar.button("退出登录", use_container_width=True):
@@ -223,12 +230,12 @@ def _load_problems() -> list[dict[str, str]]:
     return data
 
 
-def _render_problem_detail(problem_id: str) -> None:
+def _render_problem_detail(problem_id: str) -> bool:
     try:
         problem = _client().get(f"/api/problems/{problem_id}").data
     except APIClientError as exc:
         _show_error(exc)
-        return
+        return False
     st.subheader(f"{problem['id']} · {problem['title']}")
     meta = []
     if problem.get("difficulty"):
@@ -263,6 +270,49 @@ def _render_problem_detail(problem_id: str) -> None:
         st.markdown(problem["hint"])
     if problem.get("source"):
         st.caption(f"来源：{problem['source']}")
+    return True
+
+
+def _render_problem_submission(problem_id: str) -> None:
+    st.divider()
+    st.subheader("提交代码")
+    st.caption(f"当前提交题目：{problem_id}")
+    try:
+        language_data = _client().get("/api/languages/").data
+        languages = language_data.get("name", [])
+    except APIClientError as exc:
+        _show_error(exc)
+        return
+    if not languages:
+        st.warning("后端尚未注册可用语言。")
+        return
+
+    with st.form(f"submit_code_{problem_id}"):
+        language = st.selectbox("语言", languages)
+        code = st.text_area(
+            "源代码",
+            height=420,
+            placeholder="阅读完题目后，在这里输入完整程序……",
+        )
+        submitted = st.form_submit_button("提交评测", type="primary")
+    if not submitted:
+        return
+    if not code:
+        st.error("源代码不能为空")
+        return
+    try:
+        response = _client().post(
+            "/api/submissions/",
+            json={"problem_id": problem_id, "language": language, "code": code},
+        )
+    except APIClientError as exc:
+        _show_error(exc)
+    else:
+        submission_id = response.data["submission_id"]
+        st.session_state.last_submission_id = submission_id
+        st.session_state.active_submission_id = submission_id
+        st.success(f"已提交，ID：{submission_id}")
+        st.info("可前往“提交记录”页面查看或刷新评测结果。")
 
 
 def _problem_form(
@@ -507,7 +557,8 @@ def _problem_page(user: dict[str, Any]) -> None:
                 item["title"] for item in problems if item["id"] == problem_id
             ),
         )
-        _render_problem_detail(selected)
+        if _render_problem_detail(selected):
+            _render_problem_submission(selected)
         return
 
     if operation == "新建题目":
@@ -620,56 +671,6 @@ def _problem_page(user: dict[str, Any]) -> None:
                 _refresh_after_mutation(
                     f"{response.msg}：{problem_id}", show_problem_list=True
                 )
-
-
-def _submit_page() -> None:
-    st.header("提交代码")
-    try:
-        problems = _load_problems()
-        language_data = _client().get("/api/languages/").data
-        languages = language_data.get("name", [])
-    except APIClientError as exc:
-        _show_error(exc)
-        return
-    if not problems:
-        st.info("尚未录入题目。")
-        return
-    if not languages:
-        st.warning("后端尚未注册可用语言。")
-        return
-
-    with st.form("submit_code"):
-        problem_id = st.selectbox(
-            "题目",
-            [item["id"] for item in problems],
-            format_func=lambda selected: next(
-                f"{item['id']} · {item['title']}" for item in problems if item["id"] == selected
-            ),
-        )
-        language = st.selectbox("语言", languages)
-        code = st.text_area(
-            "源代码",
-            height=420,
-            placeholder="在这里输入完整程序……",
-        )
-        submitted = st.form_submit_button("提交评测", type="primary")
-    if submitted:
-        if not code:
-            st.error("源代码不能为空")
-            return
-        try:
-            response = _client().post(
-                "/api/submissions/",
-                json={"problem_id": problem_id, "language": language, "code": code},
-            )
-        except APIClientError as exc:
-            _show_error(exc)
-        else:
-            submission_id = response.data["submission_id"]
-            st.session_state.last_submission_id = submission_id
-            st.session_state.active_submission_id = submission_id
-            st.success(f"已提交，ID：{submission_id}")
-            st.info("请前往“提交记录”页面查看或刷新评测结果。")
 
 
 def _render_submission_detail(submission_id: str, is_admin: bool) -> None:
@@ -899,7 +900,6 @@ def run() -> None:
     renderers: dict[str, Callable[[], None]] = {
         "我的信息": lambda: _profile_page(user),
         "题目": lambda: _problem_page(user),
-        "提交代码": _submit_page,
         "提交记录": lambda: _submissions_page(user),
         "用户管理": _users_page,
         "访问审计": _audit_page,

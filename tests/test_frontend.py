@@ -150,6 +150,18 @@ def test_successful_problem_mutation_schedules_fresh_list_and_reruns(monkeypatch
     assert flash_messages == ["saved"]
 
 
+def test_code_submission_is_not_a_separate_navigation_page_for_any_role():
+    student_pages = ui._navigation_pages({"role": "user"})
+    teacher_pages = ui._navigation_pages({"role": "admin"})
+
+    assert "题目" in student_pages
+    assert "题目" in teacher_pages
+    assert "提交代码" not in student_pages
+    assert "提交代码" not in teacher_pages
+    assert "提交记录" in student_pages
+    assert "提交记录" in teacher_pages
+
+
 @pytest.mark.parametrize("value", ["localhost:8000", "ftp://example.com", "http://u:p@host"])
 def test_base_url_validation(value):
     with pytest.raises(ValueError):
