@@ -102,6 +102,9 @@ AI 智能命题接口：
 - `POST /api/ai/problem-tasks/`：创建异步命题或已有题目改进任务；
 - `GET /api/ai/problem-tasks/`：查询本人最近的命题任务，管理员可查看全部；
 - `GET /api/ai/problem-tasks/{task_id}`：查询实时进度、结果和 Token/费用；
+- `GET /api/ai/problem-tasks/{task_id}/revisions/`：查看每轮反馈和版本链；
+- `GET /api/ai/problem-tasks/{task_id}/revisions/{revision}`：读取指定的已验证版本；
+- `POST /api/ai/problem-tasks/{task_id}/refinements/`：基于指定版本追加反馈并生成下一版；
 - `PUT /api/ai/problem-tasks/{task_id}/cancel`：真正取消模型调用和后续验证。
 
 模型配置按用户隔离，API Key 只保存在后端进程内存中，既不写入数据库，也不会通过
@@ -112,7 +115,9 @@ Chat Completions 的 API 根地址或完整的 `/chat/completions` 地址。Toke
 生成过程会要求模型给出完整题目、Python 3 标准解、典型错误解和逐测试点覆盖目的。后端
 严格校验 JSON 结构和代码安全规则，在受资源限制的子进程中执行标准解，重新计算所有样例
 和测试点输出，并用测试点运行典型错误解。未通过结构、运行或区分度检查的草稿会携带验证
-反馈自动修复一次；通过后可直接导入题目新增或编辑页面继续人工审阅。
+反馈自动修复一次。用户可在同一任务中追加多轮修改要求，每个通过验证的版本都保留父版本、
+反馈、完整结果和累计 Token/费用，也可从任意历史版本分支继续修改。新版本生成失败或被取消时，
+上一个已验证版本仍可查看、导出和继续修改；通过后可将任意版本导入题目页面人工审阅。
 
 系统启动时会注册 Python 和 C++14。后台评测使用 `asyncio` 子进程，逐测试点记录
 AC、WA、RE、TLE、MLE 或 CE，限制运行时间、内存和输出长度。生产验收环境应为

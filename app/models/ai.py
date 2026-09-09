@@ -72,6 +72,13 @@ class ProblemTaskCreate(BaseModel):
     problem_id: ProblemId | None = None
 
 
+class ProblemTaskRefinement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    feedback: NonEmptyLimitedText
+    base_revision: int | None = Field(default=None, gt=0)
+
+
 class GeneratedProblemDraft(BaseModel):
     """Strict model-provider output used before runtime validation."""
 

@@ -112,6 +112,21 @@ CREATE TABLE IF NOT EXISTS ai_tasks (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ai_tasks_user ON ai_tasks(user_id);
+
+CREATE TABLE IF NOT EXISTS ai_task_revisions (
+    task_id TEXT NOT NULL REFERENCES ai_tasks(task_id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    base_revision INTEGER,
+    feedback TEXT NOT NULL,
+    result TEXT NOT NULL,
+    usage TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, revision),
+    FOREIGN KEY (task_id, base_revision)
+        REFERENCES ai_task_revisions(task_id, revision)
+);
+CREATE INDEX IF NOT EXISTS idx_ai_task_revisions_task
+ON ai_task_revisions(task_id, revision);
 """
 
 
@@ -219,6 +234,7 @@ class Database:
                 for table in (
                     "access_logs",
                     "testcase_results",
+                    "ai_task_revisions",
                     "ai_tasks",
                     "submissions",
                     "role_change_logs",

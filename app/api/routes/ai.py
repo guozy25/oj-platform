@@ -3,7 +3,7 @@ from fastapi import APIRouter, Request
 from app.api.body import parse_json_body
 from app.api.dependencies.auth import CurrentUserDependency
 from app.core.responses import api_response
-from app.models.ai import ModelConfigUpdate, ProblemTaskCreate
+from app.models.ai import ModelConfigUpdate, ProblemTaskCreate, ProblemTaskRefinement
 from app.services.ai_tasks import AITaskService
 
 router = APIRouter(prefix="/ai", tags=["ai"])
@@ -20,6 +20,8 @@ async def update_model_config(request: Request, current_user: CurrentUserDepende
     config = await parse_json_body(request, ModelConfigUpdate)
     data = AITaskService(request.app).configure_model(current_user.user_id, config)
     return api_response(msg="model config updated", data=data)
+
+
 @router.post("/problem-tasks/")
 async def create_problem_task(request: Request, current_user: CurrentUserDependency):
     task = await parse_json_body(request, ProblemTaskCreate)
@@ -31,6 +33,40 @@ async def create_problem_task(request: Request, current_user: CurrentUserDepende
 async def list_problem_tasks(request: Request, current_user: CurrentUserDependency):
     data = await AITaskService(request.app).list_tasks(current_user)
     return api_response(data=data)
+
+
+@router.get("/problem-tasks/{task_id}/revisions/")
+async def list_problem_task_revisions(
+    task_id: str,
+    request: Request,
+    current_user: CurrentUserDependency,
+):
+    data = await AITaskService(request.app).list_revisions(task_id, current_user)
+    return api_response(data=data)
+
+
+@router.get("/problem-tasks/{task_id}/revisions/{revision}")
+async def get_problem_task_revision(
+    task_id: str,
+    revision: int,
+    request: Request,
+    current_user: CurrentUserDependency,
+):
+    data = await AITaskService(request.app).get_revision(task_id, revision, current_user)
+    return api_response(data=data)
+
+
+@router.post("/problem-tasks/{task_id}/refinements/")
+async def refine_problem_task(
+    task_id: str,
+    request: Request,
+    current_user: CurrentUserDependency,
+):
+    refinement = await parse_json_body(request, ProblemTaskRefinement)
+    data = await AITaskService(request.app).refine_task(
+        task_id, refinement, current_user
+    )
+    return api_response(msg="refinement started", data=data)
 
 
 @router.get("/problem-tasks/{task_id}")

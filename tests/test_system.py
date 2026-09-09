@@ -87,6 +87,14 @@ async def test_system_reset_restores_initial_state(client, app, test_settings):
             """,
             (regular_user["user_id"], now, now),
         )
+        await connection.execute(
+            """
+            INSERT INTO ai_task_revisions (
+                task_id, revision, base_revision, feedback, result, usage, created_at
+            ) VALUES ('reset-ai-task', 1, NULL, 'initial', '{}', '{}', ?)
+            """,
+            (now,),
+        )
         await connection.commit()
 
     waiting_task = asyncio.create_task(asyncio.Event().wait())
@@ -117,6 +125,7 @@ async def test_system_reset_restores_initial_state(client, app, test_settings):
         "submissions",
         "testcase_results",
         "access_logs",
+        "ai_task_revisions",
         "ai_tasks",
     ):
         row = await app.state.database.fetch_one(f"SELECT COUNT(*) AS total FROM {table}")

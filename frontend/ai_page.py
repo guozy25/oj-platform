@@ -157,7 +157,12 @@ def _render_usage(usage: dict | None) -> None:
         st.caption(f"费用按照模型返回的 Token 用量和每 {usage.get('price_unit')} Token 单价计算。")
 
 
-def _render_result(result: dict, problems: list[dict[str, str]]) -> None:
+def _render_result(
+    result: dict,
+    problems: list[dict[str, str]],
+    *,
+    artifact_key: str,
+) -> None:
     problem = result["problem"]
     validation = result["validation"]
     st.success("题目已生成，并已使用标准解重新计算全部样例和测试点输出。")
@@ -198,7 +203,11 @@ def _render_result(result: dict, problems: list[dict[str, str]]) -> None:
 
     existing_ids = {item["id"] for item in problems}
     operation = "编辑题目" if problem["id"] in existing_ids else "新建题目"
-    if st.button(f"导入到“{operation}”页面", type="primary"):
+    if st.button(
+        f"导入到“{operation}”页面",
+        type="primary",
+        key=f"import_ai_revision_{artifact_key}",
+    ):
         st.session_state.ai_generated_problem = problem
         st.session_state.ai_generated_form_key = st.session_state.get(
             "active_ai_task_id", problem["id"]
@@ -211,13 +220,121 @@ def _render_result(result: dict, problems: list[dict[str, str]]) -> None:
         data=json.dumps(result, ensure_ascii=False, indent=2),
         file_name=f"{problem['id']}-ai-result.json",
         mime="application/json",
+        key=f"download_ai_revision_{artifact_key}",
     )
+
+
+def _render_revision_workspace(
+    client: OJAPIClient,
+    task: dict,
+    problems: list[dict[str, str]],
+    show_error: Callable[[APIClientError], None],
+    configured: bool,
+) -> None:
+    task_id = task["task_id"]
+    try:
+        revisions = client.get(f"/api/ai/problem-tasks/{task_id}/revisions/").data
+    except APIClientError as exc:
+        show_error(exc)
+        return
+    if not revisions:
+        return
+
+    st.subheader("多轮改题")
+    with st.expander("查看完整对话与版本链"):
+        for item in revisions:
+            source = (
+                "初稿"
+                if item["base_revision"] is None
+                else f"基于第 {item['base_revision']} 版"
+            )
+            with st.chat_message("user"):
+                st.markdown(f"**第 {item['revision']} 轮要求（{source}）**")
+                st.write(item["feedback"])
+            with st.chat_message("assistant"):
+                st.write(f"已生成并通过验证：{item['title']}")
+
+    revision_numbers = [item["revision"] for item in revisions]
+    latest_revision = max(revision_numbers)
+    selector_key = f"ai_revision_selection_{task_id}"
+    seen_key = f"ai_revision_seen_{task_id}"
+    if st.session_state.get(seen_key) != latest_revision:
+        st.session_state[selector_key] = latest_revision
+        st.session_state[seen_key] = latest_revision
+    selected_revision = st.selectbox(
+        "查看或作为下一轮基础的版本",
+        revision_numbers,
+        format_func=lambda value: f"第 {value} 版",
+        key=selector_key,
+    )
+    try:
+        selected = client.get(
+            f"/api/ai/problem-tasks/{task_id}/revisions/{selected_revision}"
+        ).data
+    except APIClientError as exc:
+        show_error(exc)
+        return
+
+    source_label = (
+        "初始生成"
+        if selected["base_revision"] is None
+        else f"由第 {selected['base_revision']} 版修改而来"
+    )
+    st.caption(f"当前查看第 {selected_revision} 版 · {source_label}")
+    _render_result(
+        selected["result"],
+        problems,
+        artifact_key=f"{task_id}_{selected_revision}",
+    )
+
+    if task["status"] in {"pending", "running"}:
+        st.info("新版本正在生成；期间仍可查看和导出已验证的历史版本。")
+        return
+    if not task.get("can_refine", False):
+        st.caption("只有任务创建者可以追加修改要求。")
+        return
+
+    with st.form(f"ai_refinement_{task_id}_{selected_revision}"):
+        feedback = st.text_area(
+            f"继续修改第 {selected_revision} 版",
+            height=140,
+            placeholder=(
+                "例如：保留核心算法，换成校园背景；加强负数与上界测试；"
+                "将难度调整为中等。"
+            ),
+        )
+        refine = st.form_submit_button(
+            "生成下一版",
+            type="primary",
+            disabled=not configured,
+        )
+    if refine:
+        if not feedback.strip():
+            st.error("请输入本轮修改要求。")
+            return
+        try:
+            response = client.post(
+                f"/api/ai/problem-tasks/{task_id}/refinements/",
+                json={
+                    "feedback": feedback.strip(),
+                    "base_revision": selected_revision,
+                },
+            )
+        except APIClientError as exc:
+            show_error(exc)
+        else:
+            st.session_state.flash = (
+                f"已基于第 {selected_revision} 版开始第 "
+                f"{response.data['revision']} 轮改题"
+            )
+            st.rerun()
 
 
 def _render_active_task(
     client: OJAPIClient,
     problems: list[dict[str, str]],
     show_error: Callable[[APIClientError], None],
+    configured: bool,
 ) -> None:
     task_id = st.session_state.get("active_ai_task_id", "")
     if not task_id:
@@ -249,18 +366,18 @@ def _render_active_task(
             else:
                 st.session_state.flash = "智能命题任务已中断"
                 st.rerun()
+    elif status == "failed":
+        st.error(task.get("error_info") or "智能命题失败")
+    elif status == "cancelled":
+        st.warning("任务已被中断，后端不会继续调用模型或执行验证。")
+    if task.get("result"):
+        _render_revision_workspace(client, task, problems, show_error, configured)
+
+    if status in {"pending", "running"}:
         auto_refresh = st.checkbox("每秒自动刷新进度", value=True)
         if auto_refresh:
             time.sleep(1)
             st.rerun()
-        return
-
-    if status == "failed":
-        st.error(task.get("error_info") or "智能命题失败")
-    elif status == "cancelled":
-        st.warning("任务已被中断，后端不会继续调用模型或执行验证。")
-    elif status == "completed" and task.get("result"):
-        _render_result(task["result"], problems)
 
 
 def _render_history(
@@ -282,6 +399,7 @@ def _render_history(
                 "状态": TASK_STATUS_LABELS.get(task["status"], task["status"]),
                 "参考题目": task.get("problem_id") or "新题目",
                 "进度": task.get("progress") or "",
+                "版本": task.get("latest_revision") or "—",
                 "创建时间": task["created_at"],
             }
             for task in tasks
@@ -309,4 +427,4 @@ def render_ai_page(
     configured = _render_config(client, show_error)
     _create_task(client, problems, show_error, configured)
     _render_history(client, show_error)
-    _render_active_task(client, problems, show_error)
+    _render_active_task(client, problems, show_error, configured)
