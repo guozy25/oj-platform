@@ -1,4 +1,3 @@
-import json
 from types import SimpleNamespace
 
 import httpx
@@ -6,7 +5,12 @@ import pytest
 
 from frontend import ui
 from frontend.api_client import APIClientError, OJAPIClient, normalize_base_url
-from frontend.forms import build_problem_payload, parse_io_pairs, parse_tags
+from frontend.forms import (
+    build_problem_payload,
+    parse_io_pairs,
+    parse_tags,
+    validate_io_pairs,
+)
 
 
 def envelope(code: int, msg: str = "success", data=None) -> httpx.Response:
@@ -158,8 +162,11 @@ def test_problem_form_parsers_build_complete_payload():
         "input_description": "input",
         "output_description": "output",
         "constraints": "small",
-        "samples": json.dumps([{"input": "1 2", "output": "3"}]),
-        "testcases": json.dumps([{"input": "2 3", "output": "5"}]),
+        "samples": [{"input": "1 2", "output": "3"}],
+        "testcases": [
+            {"input": "2 3", "output": "5"},
+            {"input": "-1 4\n", "output": "3\n"},
+        ],
         "hint": "hint",
         "source": "course",
         "tags": " basic, math, ,",
@@ -174,7 +181,10 @@ def test_problem_form_parsers_build_complete_payload():
     assert payload["title"] == "A+B"
     assert payload["tags"] == ["basic", "math"]
     assert payload["samples"] == [{"input": "1 2", "output": "3"}]
-    assert payload["testcases"] == [{"input": "2 3", "output": "5"}]
+    assert payload["testcases"] == [
+        {"input": "2 3", "output": "5"},
+        {"input": "-1 4\n", "output": "3\n"},
+    ]
     assert payload["code_length_limit"] == 4096
     assert payload["time_limit"] == 1.5
     assert payload["memory_limit"] == 128
@@ -190,8 +200,8 @@ def test_student_problem_payload_omits_teacher_only_resource_limits():
         "input_description": "input",
         "output_description": "output",
         "constraints": "small",
-        "samples": '[{"input": "", "output": ""}]',
-        "testcases": '[{"input": "", "output": ""}]',
+        "samples": [{"input": "", "output": ""}],
+        "testcases": [{"input": "", "output": ""}],
     }
 
     payload = build_problem_payload(values)
@@ -214,6 +224,20 @@ def test_student_problem_payload_omits_teacher_only_resource_limits():
 def test_io_pair_parser_rejects_invalid_json_shapes(value):
     with pytest.raises(ValueError):
         parse_io_pairs(value, "测试点")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        [],
+        [{"input": "1"}],
+        [{"input": 1, "output": "1"}],
+        [{"input": "1", "output": "1", "extra": True}],
+    ],
+)
+def test_structured_io_pairs_reject_invalid_shapes(value):
+    with pytest.raises(ValueError):
+        validate_io_pairs(value, "测试点")
 
 
 def test_tags_ignore_empty_items():

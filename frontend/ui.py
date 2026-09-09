@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 from collections.abc import Callable
 from typing import Any
@@ -272,16 +271,33 @@ def _problem_form(
 ) -> dict[str, Any] | None:
     data = initial or {}
     id_is_locked = initial is not None if lock_id is None else lock_id
-    samples = json.dumps(
-        data.get("samples", [{"input": "1 2", "output": "3"}]),
-        ensure_ascii=False,
-        indent=2,
+    initial_samples = data.get("samples") or [{"input": "", "output": ""}]
+    initial_testcases = data.get("testcases") or [{"input": "", "output": ""}]
+
+    st.markdown("#### 样例与测试点数量")
+    st.caption("先选择数量，下方会为每一项生成独立的 input 和 output 输入框。")
+    sample_count_column, testcase_count_column = st.columns(2)
+    sample_count = int(
+        sample_count_column.number_input(
+            "样例数量",
+            min_value=1,
+            max_value=max(20, len(initial_samples)),
+            value=len(initial_samples),
+            step=1,
+            key=f"{form_key}_sample_count",
+        )
     )
-    testcases = json.dumps(
-        data.get("testcases", [{"input": "1 2", "output": "3"}]),
-        ensure_ascii=False,
-        indent=2,
+    testcase_count = int(
+        testcase_count_column.number_input(
+            "测试点数量",
+            min_value=1,
+            max_value=max(100, len(initial_testcases)),
+            value=len(initial_testcases),
+            step=1,
+            key=f"{form_key}_testcase_count",
+        )
     )
+
     with st.form(form_key):
         id_column, title_column = st.columns([1, 2])
         problem_id = id_column.text_input(
@@ -298,9 +314,53 @@ def _problem_form(
             "输出说明", value=data.get("output_description", "")
         )
         constraints = st.text_area("数据范围", value=data.get("constraints", ""))
-        st.caption('JSON 格式示例：[{"input": "1 2", "output": "3"}]')
-        samples_text = st.text_area("样例 JSON", value=samples, height=140)
-        testcases_text = st.text_area("测试点 JSON", value=testcases, height=180)
+
+        st.markdown("#### 样例")
+        samples = []
+        for index in range(sample_count):
+            pair = (
+                initial_samples[index]
+                if index < len(initial_samples)
+                else {"input": "", "output": ""}
+            )
+            input_column, output_column = st.columns(2)
+            sample_input = input_column.text_area(
+                f"样例 {index + 1} · input",
+                value=pair["input"],
+                height=100,
+                key=f"{form_key}_sample_{index}_input",
+            )
+            sample_output = output_column.text_area(
+                f"样例 {index + 1} · output",
+                value=pair["output"],
+                height=100,
+                key=f"{form_key}_sample_{index}_output",
+            )
+            samples.append({"input": sample_input, "output": sample_output})
+
+        st.markdown("#### 测试点")
+        testcases = []
+        for index in range(testcase_count):
+            pair = (
+                initial_testcases[index]
+                if index < len(initial_testcases)
+                else {"input": "", "output": ""}
+            )
+            input_column, output_column = st.columns(2)
+            testcase_input = input_column.text_area(
+                f"测试点 {index + 1} · input",
+                value=pair["input"],
+                height=100,
+                key=f"{form_key}_testcase_{index}_input",
+            )
+            testcase_output = output_column.text_area(
+                f"测试点 {index + 1} · output",
+                value=pair["output"],
+                height=100,
+                key=f"{form_key}_testcase_{index}_output",
+            )
+            testcases.append({"input": testcase_input, "output": testcase_output})
+
         hint = st.text_area("提示", value=data.get("hint", ""))
         source = st.text_input("来源", value=data.get("source", ""))
         tags = st.text_input(
@@ -344,8 +404,8 @@ def _problem_form(
         "input_description": input_description,
         "output_description": output_description,
         "constraints": constraints,
-        "samples": samples_text,
-        "testcases": testcases_text,
+        "samples": samples,
+        "testcases": testcases,
         "hint": hint,
         "source": source,
         "tags": tags,

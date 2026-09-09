@@ -13,14 +13,28 @@ def parse_io_pairs(value: str, field_name: str) -> list[dict[str, str]]:
     except json.JSONDecodeError as exc:
         raise ValueError(f"{field_name}必须是有效的 JSON：{exc.msg}") from exc
 
-    if not isinstance(parsed, list) or not parsed:
+    return validate_io_pairs(parsed, field_name)
+
+
+def validate_io_pairs(value: Any, field_name: str) -> list[dict[str, str]]:
+    if not isinstance(value, list) or not value:
         raise ValueError(f"{field_name}必须是非空数组")
-    for index, item in enumerate(parsed, start=1):
+    normalized = []
+    for index, item in enumerate(value, start=1):
         if not isinstance(item, dict) or set(item) != {"input", "output"}:
             raise ValueError(f"{field_name}第 {index} 项必须仅包含 input 和 output")
         if not isinstance(item["input"], str) or not isinstance(item["output"], str):
             raise ValueError(f"{field_name}第 {index} 项的 input/output 必须是字符串")
-    return parsed
+        normalized.append({"input": item["input"], "output": item["output"]})
+    return normalized
+
+
+def normalize_io_pairs(value: Any, field_name: str) -> list[dict[str, str]]:
+    # Keep accepting the previous JSON representation for internal compatibility,
+    # while the teacher-facing form now supplies structured lists directly.
+    if isinstance(value, str):
+        return parse_io_pairs(value, field_name)
+    return validate_io_pairs(value, field_name)
 
 
 def parse_tags(value: str) -> list[str]:
@@ -49,9 +63,9 @@ def build_problem_payload(values: dict[str, Any]) -> dict[str, Any]:
         "description": str(values["description"]).strip(),
         "input_description": str(values["input_description"]).strip(),
         "output_description": str(values["output_description"]).strip(),
-        "samples": parse_io_pairs(str(values["samples"]), "样例"),
+        "samples": normalize_io_pairs(values["samples"], "样例"),
         "constraints": str(values["constraints"]).strip(),
-        "testcases": parse_io_pairs(str(values["testcases"]), "测试点"),
+        "testcases": normalize_io_pairs(values["testcases"], "测试点"),
         "hint": str(values.get("hint", "")),
         "source": str(values.get("source", "")),
         "tags": parse_tags(str(values.get("tags", ""))),
