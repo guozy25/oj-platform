@@ -156,10 +156,69 @@ async def test_rejects_unsafe_or_incomplete_language_templates(client):
             "run_cmd": "{exe}",
         },
         {"name": "bad5", "file_ext": ".x", "run_cmd": "runner {src}\nwhoami"},
+        {"name": "bad6", "file_ext": ".x", "run_cmd": "/bin/sh {src}"},
+        {"name": "bad7", "file_ext": ".x", "run_cmd": "sh -c {src}"},
+        {"name": "bad8", "file_ext": ".x", "run_cmd": "python3 -c pass {src}"},
+        {"name": "bad8b", "file_ext": ".x", "run_cmd": "python3 -cpass {src}"},
+        {"name": "bad9", "file_ext": ".x", "run_cmd": "python3 {src}; touch owned"},
+        {"name": "bad10", "file_ext": ".x", "run_cmd": "python3 ../{src}"},
+        {"name": "bad11", "file_ext": ".x", "run_cmd": "python3 {src} /etc/passwd"},
+        {
+            "name": "bad12",
+            "file_ext": ".x",
+            "compile_cmd": "g++ {src} -o {exe} -fplugin=evil",
+            "run_cmd": "{exe}",
+        },
+        {
+            "name": "bad13",
+            "file_ext": ".x",
+            "compile_cmd": "go build -toolexec=evil -o {exe} {src}",
+            "run_cmd": "{exe}",
+        },
+        {
+            "name": "bad14",
+            "file_ext": ".x",
+            "compile_cmd": "g++ {src}",
+            "run_cmd": "{exe}",
+        },
     ]
     for language in invalid_languages:
         response = await client.post("/api/languages/", json=language)
         assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_stored_language_commands_are_revalidated_before_execution(
+    client, app, test_settings
+):
+    await register_login_and_create_problem(
+        client, username="stored-command-user", problem_id="stored-command"
+    )
+    user = await app.state.database.fetch_one(
+        "SELECT user_id FROM users WHERE username = 'stored-command-user'"
+    )
+    marker = test_settings.project_root / "unsafe-command-ran"
+    await app.state.database.execute(
+        """
+        INSERT INTO languages (
+            name, file_ext, compile_cmd, run_cmd,
+            time_limit, memory_limit, created_by, created_at
+        ) VALUES ('unsafe-shell', '.sh', NULL, '/bin/sh {src}', 1, 128, ?, datetime('now'))
+        """,
+        (user["user_id"],),
+    )
+
+    response = await submit(
+        client,
+        "stored-command",
+        f"touch {marker}",
+        language="unsafe-shell",
+    )
+    submission_id = response.json()["data"]["submission_id"]
+    result = await wait_for_result(app, submission_id)
+
+    assert result["status"] == "error"
+    assert not marker.exists()
 
 
 @pytest.mark.asyncio

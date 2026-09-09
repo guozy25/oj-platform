@@ -200,7 +200,9 @@ class JudgeService:
                 return
 
             problem = await self.problem_repository.get(row["problem_id"])
-            language = await LanguageService(self.database).get(row["language"])
+            language = await LanguageService(
+                self.database, self.settings.allowed_language_executables
+            ).get_for_execution(row["language"])
             working_directory = Path(
                 await asyncio.to_thread(
                     mkdtemp,

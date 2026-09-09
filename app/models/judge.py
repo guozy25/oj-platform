@@ -33,16 +33,41 @@ FileExtension = Annotated[
         pattern=r"^\.[A-Za-z0-9]+$",
     ),
 ]
+SHELL_CONTROL_CHARACTERS = frozenset(";&|><`$")
+COMMAND_PLACEHOLDERS = frozenset({"{src}", "{exe}"})
+
+
+def command_tokens(command: str) -> tuple[str, ...]:
+    if (
+        "\x00" in command
+        or "\n" in command
+        or "\r" in command
+        or any(character in command for character in SHELL_CONTROL_CHARACTERS)
+    ):
+        raise ValueError("command template contains unsafe control characters")
+    try:
+        tokens = tuple(shlex.split(command))
+    except ValueError as exc:
+        raise ValueError("invalid command template") from exc
+    if not tokens:
+        raise ValueError("invalid command template")
+
+    for token in tokens:
+        if "{" in token or "}" in token:
+            if token not in COMMAND_PLACEHOLDERS:
+                raise ValueError("command placeholders must be separate arguments")
+            continue
+        if "/" in token or "\\" in token or token.startswith(("~", "@")):
+            raise ValueError("command template must not reference external paths")
+    return tokens
 
 
 def command_placeholders(command: str) -> set[str]:
+    command_tokens(command)
     try:
-        tokens = shlex.split(command)
         parsed = list(Formatter().parse(command))
     except ValueError as exc:
         raise ValueError("invalid command template") from exc
-    if not tokens or "\x00" in command or "\n" in command or "\r" in command:
-        raise ValueError("invalid command template")
 
     placeholders: set[str] = set()
     for _literal, field_name, format_spec, conversion in parsed:
@@ -90,6 +115,8 @@ class LanguageCreate(BaseModel):
             compile_fields = command_placeholders(self.compile_cmd)
             if "src" not in compile_fields:
                 raise ValueError("compile_cmd must reference {src}")
+            if "exe" in run_fields and "exe" not in compile_fields:
+                raise ValueError("compile_cmd must create the {exe} used by run_cmd")
             if not ({"src", "exe"} & run_fields):
                 raise ValueError("run_cmd must reference {src} or {exe}")
         elif "src" not in run_fields:

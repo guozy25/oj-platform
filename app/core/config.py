@@ -5,6 +5,28 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_ALLOWED_LANGUAGE_EXECUTABLES = (
+    "python",
+    "python3",
+    "pypy3",
+    "gcc",
+    "g++",
+    "clang",
+    "clang++",
+    "go",
+    "rustc",
+    "java",
+    "javac",
+    "kotlin",
+    "kotlinc",
+    "node",
+    "ruby",
+    "php",
+    "lua",
+    "swift",
+    "swiftc",
+    "dotnet",
+)
 
 
 def _path_from_env(name: str, default: str, project_root: Path) -> Path:
@@ -17,6 +39,13 @@ def _bool_from_env(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _csv_from_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +63,7 @@ class Settings:
     max_program_output_bytes: int = 1_048_576
     initial_admin_username: str = "admin"
     initial_admin_password: str = "admintestpassword"
+    allowed_language_executables: tuple[str, ...] = DEFAULT_ALLOWED_LANGUAGE_EXECUTABLES
     log_level: str = "INFO"
 
     @classmethod
@@ -53,6 +83,9 @@ class Settings:
             max_program_output_bytes=int(os.getenv("OJ_MAX_PROGRAM_OUTPUT_BYTES", "1048576")),
             initial_admin_username=os.getenv("OJ_INITIAL_ADMIN_USERNAME", "admin"),
             initial_admin_password=os.getenv("OJ_INITIAL_ADMIN_PASSWORD", "admintestpassword"),
+            allowed_language_executables=_csv_from_env(
+                "OJ_ALLOWED_LANGUAGE_EXECUTABLES", DEFAULT_ALLOWED_LANGUAGE_EXECUTABLES
+            ),
             log_level=os.getenv("OJ_LOG_LEVEL", "INFO").upper(),
         )
 

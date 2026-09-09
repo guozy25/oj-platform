@@ -63,6 +63,11 @@ password: admintestpassword
 - `POST /api/languages/`：注册经过安全模板校验的新语言；
 - `POST /api/submissions/`：创建评测任务并立即返回 `pending`。
 
+动态语言命令只接受 `OJ_ALLOWED_LANGUAGE_EXECUTABLES` 中配置的可执行文件名，并禁止
+shell 控制符、外部路径、内联代码、编译器插件和命令包装器。`{src}`、`{exe}` 必须作为
+独立参数使用；执行前还会重新校验数据库中的命令，避免旧配置绕过注册检查。若验收环境安装了
+其他编译器，可在 `.env` 中以逗号分隔追加允许的可执行文件名。
+
 提交管理接口：
 
 - `GET /api/submissions/{submission_id}`：提交者或管理员查询评测详情；

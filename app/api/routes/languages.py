@@ -12,9 +12,10 @@ router = APIRouter(prefix="/languages", tags=["languages"])
 @router.post("/")
 async def register_language(request: Request, current_user: CurrentUserDependency):
     language = await parse_json_body(request, LanguageCreate)
-    data = await LanguageService(request.app.state.database).register(
-        language, current_user.user_id
-    )
+    settings = request.app.state.settings
+    data = await LanguageService(
+        request.app.state.database, settings.allowed_language_executables
+    ).register(language, current_user.user_id)
     return api_response(msg="language registered", data=data)
 
 
