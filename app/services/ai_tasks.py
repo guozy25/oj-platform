@@ -51,9 +51,11 @@ OUTPUT_SCHEMA = """输出严格采用以下结构：
   "incorrect_solutions": ["典型错误解 1", "典型错误解 2"],
   "testcase_purposes": ["与每个测试点一一对应的覆盖目的"]
 }
-必须提供 1 至 3 个样例、8 至 20 个互不重复的测试点、2 至 4 个典型错误解。测试点必须包含
-最小边界、最大边界、特殊结构和足以区分错误复杂度算法的数据。所有输入规模必须适合在配置的
-时间限制内由标准解完成。"""
+必须提供 1 至 3 个样例、8 至 20 个互不重复且不复用样例输入的测试点、2 至 4 个彼此不同且
+不同于标准解的典型错误解。每个测试点的覆盖目的必须具体且互不重复；至少 2 个明确的边界场景、
+至少 1 个大规模/性能/复杂度场景，并同时覆盖小、中、大三档输入规模。整套测试点必须杀死每个
+典型错误解，且至少 2 个不同测试点能够识别错误解。所有输入规模必须适合在配置的时间限制内由
+标准解完成。"""
 
 
 class Provider(Protocol):
@@ -700,16 +702,6 @@ class AITaskService:
                         prompt = _repair_prompt(previous_content, str(exc))
                         continue
                     raise
-
-                surviving = validated.validation["surviving_mutants"]
-                if surviving and attempt == 0:
-                    feedback = (
-                        "典型错误解法未被测试点杀死，编号："
-                        + ", ".join(map(str, surviving))
-                        + "。请增加或替换边界及大规模测试点。"
-                    )
-                    prompt = _repair_prompt(previous_content, feedback)
-                    continue
 
                 result = {
                     "problem": validated.problem.model_dump(mode="json"),

@@ -4,7 +4,9 @@ import json
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.models.ai import GeneratedProblemDraft
 from app.services.ai_provider import ProviderResult
+from app.services.ai_validation import DraftValidationError, validate_generated_draft
 from tests.test_users import login, register
 
 
@@ -20,7 +22,7 @@ def model_config(api_key: str = "super-secret-key") -> dict:
 
 
 def generated_draft() -> dict:
-    inputs = ["1 2", "0 0", "-5 2", "5 -2", "-5 -2", "10 20", "999 1", "-1000 1000"]
+    inputs = ["2 3", "0 0", "-5 2", "5 -2", "-5 -2", "10 20", "999 1", "-1000 1000"]
     return {
         "problem": {
             "id": "AI_SUM",
@@ -174,6 +176,13 @@ async def test_generated_problem_is_verified_costed_and_ready_for_import(client,
     assert validation["reference_outputs_verified"] is True
     assert validation["source_safety_checked"] is True
     assert validation["mutants_killed"] == validation["mutants_total"] == 2
+    assert validation["surviving_mutants"] == []
+    assert validation["quality_gate"]["passed"] is True
+    assert validation["quality_gate"]["boundary_case_count"] >= 2
+    assert validation["quality_gate"]["stress_case_count"] >= 1
+    assert validation["quality_gate"]["effective_testcase_count"] >= 2
+    assert validation["quality_gate"]["mutant_kill_rate"] == 1.0
+    assert len(validation["mutant_kill_cases"]) == 2
     assert validation["warnings"] == []
     assert data["usage"] == {
         "input_tokens": 100,
@@ -361,6 +370,92 @@ async def test_invalid_first_draft_is_repaired_and_usage_is_accumulated(client, 
     assert detail["usage"]["output_tokens"] == 100
     assert detail["usage"]["cost"] == 0.8
     assert provider.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_weak_testcase_draft_is_repaired_with_quality_feedback(client, app):
+    await register(client, "ai-quality-repair-user")
+    await login(client, "ai-quality-repair-user", "secret123")
+    await client.put("/api/ai/model-config", json=model_config())
+    weak = generated_draft()
+    weak["problem"]["testcases"][1]["input"] = weak["problem"]["testcases"][0][
+        "input"
+    ]
+    provider = StaticProvider(
+        None,
+        [
+            json.dumps(weak, ensure_ascii=False),
+            json.dumps(generated_draft(), ensure_ascii=False),
+        ],
+    )
+    app.state.ai_provider_factory = lambda _config: provider
+
+    created = await client.post(
+        "/api/ai/problem-tasks/", json={"requirement": "生成测试点质量可靠的题目"}
+    )
+    task_id = created.json()["data"]["task_id"]
+    await wait_for_ai_task(app, task_id)
+    detail = (await client.get(f"/api/ai/problem-tasks/{task_id}")).json()["data"]
+
+    assert detail["status"] == "completed"
+    assert detail["result"]["validation"]["quality_gate"]["passed"] is True
+    assert provider.calls == 2
+    assert "测试点输入存在重复" in provider.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_surviving_mutant_fails_after_the_repair_attempt(client, app):
+    await register(client, "ai-quality-failure-user")
+    await login(client, "ai-quality-failure-user", "secret123")
+    await client.put("/api/ai/model-config", json=model_config())
+    weak = generated_draft()
+    weak["incorrect_solutions"][1] = (
+        "a, b = map(int, input().split())\nresult = a + b\nprint(result)"
+    )
+    provider = StaticProvider(None, [json.dumps(weak, ensure_ascii=False)])
+    app.state.ai_provider_factory = lambda _config: provider
+
+    created = await client.post(
+        "/api/ai/problem-tasks/", json={"requirement": "不能放行无法区分错误解的题目"}
+    )
+    task_id = created.json()["data"]["task_id"]
+    await wait_for_ai_task(app, task_id)
+    detail = (await client.get(f"/api/ai/problem-tasks/{task_id}")).json()["data"]
+
+    assert detail["status"] == "failed"
+    assert "典型错误解未被任何测试点识别" in detail["error_info"]
+    assert provider.calls == 2
+    assert "典型错误解未被任何测试点识别" in provider.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_quality_gate_rejects_sample_reuse_weak_purposes_and_duplicate_mutants(
+    test_settings,
+):
+    sample_reuse = generated_draft()
+    sample_reuse["problem"]["testcases"][0]["input"] = "1 2"
+    with pytest.raises(DraftValidationError, match="不得直接复用样例输入"):
+        await validate_generated_draft(
+            GeneratedProblemDraft.model_validate(sample_reuse), test_settings
+        )
+
+    weak_purposes = generated_draft()
+    weak_purposes["testcase_purposes"] = [
+        f"普通场景{index}" for index in range(8)
+    ]
+    with pytest.raises(DraftValidationError, match="至少包含 2 个.*边界"):
+        await validate_generated_draft(
+            GeneratedProblemDraft.model_validate(weak_purposes), test_settings
+        )
+
+    duplicate_mutants = generated_draft()
+    duplicate_mutants["incorrect_solutions"][1] = duplicate_mutants[
+        "incorrect_solutions"
+    ][0]
+    with pytest.raises(DraftValidationError, match="错误解之间存在重复"):
+        await validate_generated_draft(
+            GeneratedProblemDraft.model_validate(duplicate_mutants), test_settings
+        )
 
 
 @pytest.mark.asyncio

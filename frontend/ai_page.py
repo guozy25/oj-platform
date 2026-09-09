@@ -184,6 +184,18 @@ def _render_result(
     metrics[2].metric("典型错误解", validation["mutants_total"])
     metrics[3].metric("已识别错误解", validation["mutants_killed"])
 
+    quality = validation.get("quality_gate", {})
+    if quality.get("passed"):
+        st.success("测试点质量门槛已通过：输入独立、规模分层，且全部典型错误解均被识别。")
+        quality_metrics = st.columns(4)
+        quality_metrics[0].metric("边界场景", quality["boundary_case_count"])
+        quality_metrics[1].metric("大规模/性能场景", quality["stress_case_count"])
+        quality_metrics[2].metric(
+            "有效测试点",
+            f"{quality['effective_testcase_count']}/{validation['testcase_count']}",
+        )
+        quality_metrics[3].metric("不同输入长度", quality["distinct_input_sizes"])
+
     purposes = [
         {
             "测试点": index,
@@ -195,6 +207,10 @@ def _render_result(
     st.dataframe(purposes, hide_index=True, use_container_width=True)
     for warning in validation.get("warnings", []):
         st.warning(warning)
+
+    if validation.get("mutant_kill_cases"):
+        with st.expander("查看错误解 × 测试点验证矩阵"):
+            st.json(validation["mutant_kill_cases"])
 
     with st.expander("查看样例与测试点 JSON"):
         st.json({"samples": problem["samples"], "testcases": problem["testcases"]})
