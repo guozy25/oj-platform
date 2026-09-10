@@ -133,10 +133,6 @@ class GeneratedProblemDraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     problem: ProblemInput
-    reference_solution: str = Field(min_length=1, max_length=100_000)
-    # Kept optional so older saved revisions remain readable. New prompts no
-    # longer ask the model to generate incorrect solutions.
-    incorrect_solutions: list[str] = Field(default_factory=list, max_length=4)
     testcase_purposes: list[str] = Field(min_length=8, max_length=20)
 
     @model_validator(mode="after")

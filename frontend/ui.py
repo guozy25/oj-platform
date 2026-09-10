@@ -20,6 +20,14 @@ STATUS_LABELS = {
     "success": "评测完成",
     "error": "评测异常",
 }
+VERDICT_LABELS = {
+    "AC": "通过",
+    "WA": "答案错误",
+    "TLE": "时间超限",
+    "MLE": "内存超限",
+    "CE": "编译失败",
+    "RE": "运行错误",
+}
 
 
 def _new_client(base_url: str) -> OJAPIClient:
@@ -58,6 +66,7 @@ def _replace_client(base_url: str) -> None:
     st.session_state.last_submission_id = ""
     st.session_state.active_submission_id = ""
     st.session_state.active_ai_task_id = ""
+    st.session_state.pop("audit_query_params", None)
     st.session_state.reset_navigation = True
 
 
@@ -80,6 +89,14 @@ def _show_error(error: APIClientError) -> None:
     }
     prefix = labels.get(error.status_code, f"HTTP {error.status_code}")
     st.error(f"{prefix}：{error.message}")
+
+
+def _show_registration_error(error: APIClientError) -> None:
+    """Show registration failures without exposing duplicate-user API details."""
+    if error.status_code == 400 and error.message == "username already exists":
+        st.error("用户名已存在")
+        return
+    _show_error(error)
 
 
 def _set_flash(message: str) -> None:
@@ -168,7 +185,7 @@ def _render_auth() -> None:
                         json={"username": username, "password": password},
                     )
                 except APIClientError as exc:
-                    _show_error(exc)
+                    _show_registration_error(exc)
                 else:
                     _set_flash("注册成功，请使用新账号登录")
                     st.rerun()
@@ -235,6 +252,51 @@ def _load_problems() -> list[dict[str, str]]:
     if not isinstance(data, list):
         raise APIClientError("题目列表响应格式不正确", status_code=500)
     return data
+
+
+def _problem_operations(user: dict[str, Any]) -> list[str]:
+    operations = ["题目列表"]
+    if user.get("role") == "admin":
+        operations.extend(["新建题目", "编辑题目", "删除题目"])
+    return operations
+
+
+def _render_problem_deletion(problems: list[dict[str, str]]) -> None:
+    if not problems:
+        st.info("暂无可删除的题目。")
+        return
+
+    problem_ids = [item["id"] for item in problems]
+    problem_id = st.selectbox(
+        "选择要删除的题目",
+        problem_ids,
+        format_func=lambda selected_id: next(
+            item["title"] for item in problems if item["id"] == selected_id
+        ),
+        key="delete_problem_selection",
+    )
+    if not _render_problem_detail(problem_id):
+        return
+
+    st.divider()
+    st.warning("删除题目后无法恢复，请谨慎操作。")
+    confirmed = st.checkbox(
+        f"我确认删除题目 {problem_id}", key=f"delete_confirm_{problem_id}"
+    )
+    if st.button(
+        "删除题目",
+        disabled=not confirmed,
+        type="secondary",
+        key=f"delete_problem_{problem_id}",
+    ):
+        try:
+            response = _client().delete(f"/api/problems/{problem_id}")
+        except APIClientError as exc:
+            _show_error(exc)
+        else:
+            _refresh_after_mutation(
+                f"{response.msg}：{problem_id}", show_problem_list=True
+            )
 
 
 def _render_problem_detail(problem_id: str) -> bool:
@@ -540,9 +602,12 @@ def _problem_page(user: dict[str, Any]) -> None:
     pending_operation = st.session_state.pop("pending_problem_operation", None)
     if pending_operation is not None:
         st.session_state.problem_operation = pending_operation
+    operations = _problem_operations(user)
+    if st.session_state.get("problem_operation") not in {None, *operations}:
+        st.session_state.problem_operation = "题目列表"
     operation = st.radio(
         "操作",
-        ["题目列表", "新建题目", "编辑题目"],
+        operations,
         horizontal=True,
         label_visibility="collapsed",
         key="problem_operation",
@@ -555,7 +620,7 @@ def _problem_page(user: dict[str, Any]) -> None:
 
     if operation == "题目列表":
         if not problems:
-            st.info("暂无题目，可切换到“新建题目”开始录入。")
+            st.info("暂无题目。")
             return
         st.dataframe(problems, use_container_width=True, hide_index=True)
         selected = st.selectbox(
@@ -594,6 +659,10 @@ def _problem_page(user: dict[str, Any]) -> None:
                 _refresh_after_mutation(
                     f"{response.msg}：{payload['id']}", show_problem_list=True
                 )
+        return
+
+    if operation == "删除题目":
+        _render_problem_deletion(problems)
         return
 
     if not problems:
@@ -668,18 +737,24 @@ def _problem_page(user: dict[str, Any]) -> None:
                     st.session_state[server_state_key] = None
                     _refresh_after_mutation(response.msg)
 
-        confirmed = st.checkbox(
-            f"我确认删除题目 {problem_id}", key=f"delete_confirm_{problem_id}"
-        )
-        if st.button("删除题目", disabled=not confirmed, type="secondary"):
-            try:
-                response = _client().delete(f"/api/problems/{problem_id}")
-            except APIClientError as exc:
-                _show_error(exc)
-            else:
-                _refresh_after_mutation(
-                    f"{response.msg}：{problem_id}", show_problem_list=True
-                )
+def _format_resource_usage(value: Any, unit: str) -> str:
+    if isinstance(value, (int, float)):
+        return f"{value:.3f} {unit}"
+    return "—"
+
+
+def _testcase_result_rows(results: list[dict[str, Any]]) -> list[dict[str, str]]:
+    return [
+        {
+            "测试点": f"#{result.get('id', '—')}",
+            "状态": VERDICT_LABELS.get(
+                str(result.get("result", "")), str(result.get("result", "未知"))
+            ),
+            "运行时间": _format_resource_usage(result.get("time"), "s"),
+            "内存": _format_resource_usage(result.get("memory"), "MB"),
+        }
+        for result in results
+    ]
 
 
 def _render_submission_detail(submission_id: str, is_admin: bool) -> None:
@@ -701,12 +776,10 @@ def _render_submission_detail(submission_id: str, is_admin: bool) -> None:
         st.info("评测任务正在排队或执行，请稍后刷新提交记录。")
     if detail.get("error_info"):
         st.error(f"评测错误：{detail['error_info']}")
-    if detail.get("compile_info") is not None:
-        st.markdown("#### 编译信息")
-        st.json(detail["compile_info"])
-    if detail.get("run_info") is not None:
-        st.markdown("#### 运行信息")
-        st.json(detail["run_info"])
+    compile_info = detail.get("compile_info")
+    if isinstance(compile_info, dict) and compile_info.get("result") == "CE":
+        message = str(compile_info.get("message", "")).strip()
+        st.error(f"编译失败：{message}" if message else "编译失败。")
 
     log_column, rejudge_column = st.columns(2)
     show_log = log_column.button("查看评测日志", key=f"log_{submission_id}")
@@ -728,7 +801,9 @@ def _render_submission_detail(submission_id: str, is_admin: bool) -> None:
         else:
             st.markdown("#### 评测日志")
             score_column, full_score_column = st.columns(2)
-            score_column.metric("得分", log.get("score") if log.get("score") is not None else "—")
+            score_column.metric(
+                "得分", log.get("score") if log.get("score") is not None else "—"
+            )
             full_score_column.metric(
                 "满分", log.get("counts") if log.get("counts") is not None else "—"
             )
@@ -736,7 +811,9 @@ def _render_submission_detail(submission_id: str, is_admin: bool) -> None:
             if details is None:
                 st.caption("当前题目未公开逐测试点详情。")
             elif details:
-                st.dataframe(details, use_container_width=True, hide_index=True)
+                st.dataframe(
+                    _testcase_result_rows(details), hide_index=True, width="stretch"
+                )
             else:
                 st.info("暂无测试点日志。")
 
@@ -942,31 +1019,99 @@ def _users_page() -> None:
             _refresh_after_mutation(f"{response.msg}：{response.data['username']}")
 
 
+def _audit_display_rows(
+    logs: list[dict[str, Any]], users_by_id: dict[str, str]
+) -> list[dict[str, str]]:
+    action_labels = {"view_logs": "查看评测日志", "view_log": "查看评测日志"}
+    return [
+        {
+            "用户": users_by_id.get(str(item.get("user_id", "")), "未知用户"),
+            "用户 ID": str(item.get("user_id", "")),
+            "题目 ID": str(item.get("problem_id", "")),
+            "操作": action_labels.get(
+                str(item.get("action", "")), str(item.get("action", ""))
+            ),
+            "访问时间": str(item.get("time", "")),
+            "HTTP 状态": str(item.get("status", "")),
+        }
+        for item in logs
+    ]
+
+
 def _audit_page() -> None:
     st.header("访问审计")
-    first, second = st.columns(2)
-    user_id = first.text_input("用户 ID（可选）")
-    problem_id = second.text_input("题目 ID（可选）")
-    third, fourth = st.columns(2)
-    page = third.number_input("页码", min_value=1, value=1, key="audit_page")
-    page_size = fourth.number_input(
-        "每页条数", min_value=1, max_value=100, value=20, key="audit_page_size"
+    st.caption(
+        "这里只审计用户对“评测日志”的访问。查看提交列表或总分不会生成记录；"
+        "成功和被权限拒绝的日志访问会分别记录 HTTP 200 和 403。"
     )
-    if st.button("查询访问日志", type="primary"):
+
+    try:
+        user_listing = _client().get("/api/users/").data
+        problems = _load_problems()
+    except APIClientError as exc:
+        _show_error(exc)
+        return
+
+    users = user_listing.get("users", []) if isinstance(user_listing, dict) else []
+    users_by_id = {
+        str(item["user_id"]): str(item["username"])
+        for item in users
+        if isinstance(item, dict) and "user_id" in item and "username" in item
+    }
+    problem_ids = [str(item["id"]) for item in problems]
+
+    with st.form("audit_filters"):
+        first, second = st.columns(2)
+        selected_user_id = first.selectbox(
+            "用户（可选）",
+            [None, *users_by_id],
+            format_func=lambda value: (
+                "全部用户"
+                if value is None
+                else f"{users_by_id.get(value, '未知用户')} · {value}"
+            ),
+        )
+        selected_problem_id = second.selectbox(
+            "题目（可选）",
+            [None, *problem_ids],
+            format_func=lambda value: "全部题目" if value is None else value,
+        )
+        third, fourth = st.columns(2)
+        page = third.number_input("页码", min_value=1, value=1, key="audit_page")
+        page_size = fourth.number_input(
+            "每页条数", min_value=1, max_value=100, value=20, key="audit_page_size"
+        )
+        query_logs = st.form_submit_button(
+            "查询 / 刷新访问日志", type="primary", icon=":material/search:"
+        )
+
+    if query_logs or "audit_query_params" not in st.session_state:
         params: dict[str, Any] = {"page": int(page), "page_size": int(page_size)}
-        if user_id.strip():
-            params["user_id"] = user_id.strip()
-        if problem_id.strip():
-            params["problem_id"] = problem_id.strip()
-        try:
-            logs = _client().get("/api/logs/access/", params=params).data
-        except APIClientError as exc:
-            _show_error(exc)
-        else:
-            if logs:
-                st.dataframe(logs, use_container_width=True, hide_index=True)
-            else:
-                st.info("没有符合条件的访问日志。")
+        if selected_user_id is not None:
+            params["user_id"] = selected_user_id
+        if selected_problem_id is not None:
+            params["problem_id"] = selected_problem_id
+        st.session_state.audit_query_params = params
+
+    try:
+        logs = _client().get(
+            "/api/logs/access/", params=st.session_state.audit_query_params
+        ).data
+    except APIClientError as exc:
+        _show_error(exc)
+        return
+
+    if logs:
+        st.write(f"当前页共 {len(logs)} 条访问记录")
+        st.dataframe(
+            _audit_display_rows(logs, users_by_id),
+            hide_index=True,
+            width="stretch",
+        )
+    elif selected_user_id is None and selected_problem_id is None:
+        st.info("当前还没有日志访问记录。用户点击“查看评测日志”后会在这里留下记录。")
+    else:
+        st.info("当前筛选条件下没有日志访问记录。")
 
 
 def run() -> None:

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -45,9 +46,14 @@ def generated_draft() -> dict:
             "description": "输入两个整数，输出它们的和。",
             "input_description": "一行两个整数 a 和 b。",
             "output_description": "输出 a+b。",
-            "samples": [{"input": "1 2", "output": "故意错误的模型输出"}],
+            "samples": [{"input": "1 2", "output": "3"}],
             "constraints": "-1000 <= a,b <= 1000",
-            "testcases": [{"input": value, "output": "wrong"} for value in inputs],
+            "testcases": [
+                {"input": value, "output": output}
+                for value, output in zip(
+                    inputs, ["5", "0", "-3", "3", "-7", "30", "1000", "0"], strict=True
+                )
+            ],
             "hint": "注意负数。",
             "source": "AI generated",
             "tags": ["基础", "数学"],
@@ -56,11 +62,6 @@ def generated_draft() -> dict:
             "author": "AI",
             "difficulty": "入门",
         },
-        "reference_solution": "a, b = map(int, input().split())\nprint(a + b)",
-        "incorrect_solutions": [
-            "a, b = map(int, input().split())\nprint(a - b)",
-            "a, b = map(int, input().split())\nprint(abs(a) + abs(b))",
-        ],
         "testcase_purposes": [
             "普通正数",
             "最小零值边界",
@@ -286,7 +287,9 @@ async def test_generated_problem_is_verified_costed_and_ready_for_import(
 ):
     await login_as_initial_admin(client, test_settings)
     await client.put("/api/ai/model-config", json=model_config())
-    provider = StaticProvider(None, [json.dumps(generated_draft(), ensure_ascii=False)])
+    model_output = generated_draft()
+    model_output["problem"].pop("id")
+    provider = StaticProvider(None, [json.dumps(model_output, ensure_ascii=False)])
     app.state.ai_provider_factory = lambda _config: provider
 
     created = await client.post(
@@ -305,16 +308,19 @@ async def test_generated_problem_is_verified_costed_and_ready_for_import(
     assert data["can_refine"] is True
     assert data["latest_revision"] == 1
     assert data["result"]["ready_for_import"] is True
+    generated_problem_id = data["result"]["problem"]["id"]
+    assert re.fullmatch(r"P[0-9A-F]{8}", generated_problem_id)
+    assert '"id":' not in provider.prompts[0]
     assert data["result"]["problem"]["samples"][0]["output"] == "3"
     assert data["result"]["problem"]["testcases"][2]["output"] == "-3"
     validation = data["result"]["validation"]
-    assert validation["reference_outputs_verified"] is True
-    assert validation["source_safety_checked"] is True
+    assert validation["reference_outputs_verified"] is False
+    assert validation["source_safety_checked"] is False
     assert validation["quality_gate"]["passed"] is True
     assert validation["quality_gate"]["boundary_case_count"] >= 2
     assert validation["quality_gate"]["stress_case_count"] >= 1
     assert validation["quality_gate"]["effective_testcase_count"] >= 2
-    assert validation["warnings"] == []
+    assert validation["warnings"] == ["样例与测试点输出由模型提供，尚未通过标准解自动核对。"]
     assert data["usage"] == {
         "input_tokens": 100,
         "output_tokens": 50,
@@ -466,7 +472,7 @@ async def test_completed_task_supports_multiple_validated_refinement_rounds(
     )
     retried = await client.post(
         f"/api/ai/problem-tasks/{task_id}/refinements/",
-        json={"feedback": "根据原分支重试，保持标准解安全", "base_revision": 4},
+        json={"feedback": "根据原分支重试，保持测试点质量", "base_revision": 4},
     )
     assert retried.json()["data"]["revision"] == 5
     await wait_for_ai_task(app, task_id)
@@ -538,18 +544,16 @@ async def test_weak_testcase_draft_is_repaired_with_quality_feedback(
 
 
 @pytest.mark.asyncio
-async def test_problem_without_incorrect_solutions_is_accepted(
+async def test_problem_without_reference_solution_is_accepted(
     client, app, test_settings
 ):
     await login_as_initial_admin(client, test_settings)
     await client.put("/api/ai/model-config", json=model_config())
-    draft = generated_draft()
-    draft.pop("incorrect_solutions")
-    provider = StaticProvider(None, [json.dumps(draft, ensure_ascii=False)])
+    provider = StaticProvider(None, [json.dumps(generated_draft(), ensure_ascii=False)])
     app.state.ai_provider_factory = lambda _config: provider
 
     created = await client.post(
-        "/api/ai/problem-tasks/", json={"requirement": "只需要标准解和可靠测试点"}
+        "/api/ai/problem-tasks/", json={"requirement": "只需要完整题面和可靠测试点"}
     )
     task_id = created.json()["data"]["task_id"]
     await wait_for_ai_task(app, task_id)
@@ -603,14 +607,17 @@ async def test_quality_gate_rejects_sample_reuse_and_weak_purposes(
 
 
 @pytest.mark.asyncio
-async def test_generated_code_with_side_effects_is_rejected_without_leaking_key(
+async def test_model_supplied_reference_solution_is_rejected_and_repaired(
     client, app, test_settings
 ):
     await login_as_initial_admin(client, test_settings)
     await client.put("/api/ai/model-config", json=model_config())
     unsafe = generated_draft()
     unsafe["reference_solution"] = "import os\nos.remove('important-file')"
-    provider = StaticProvider(None, [json.dumps(unsafe)])
+    provider = StaticProvider(
+        None,
+        [json.dumps(unsafe), json.dumps(generated_draft(), ensure_ascii=False)],
+    )
     app.state.ai_provider_factory = lambda _config: provider
 
     created = await client.post(
@@ -620,8 +627,8 @@ async def test_generated_code_with_side_effects_is_rejected_without_leaking_key(
     await wait_for_ai_task(app, task_id)
     response = await client.get(f"/api/ai/problem-tasks/{task_id}")
 
-    assert response.json()["data"]["status"] == "failed"
-    assert "blocked" in response.json()["data"]["error_info"]
+    assert response.json()["data"]["status"] == "completed"
+    assert "reference_solution" not in response.json()["data"]["result"]
     assert "super-secret-key" not in response.text
     assert provider.calls == 2
 

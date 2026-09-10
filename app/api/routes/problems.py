@@ -12,7 +12,7 @@ router = APIRouter(prefix="/problems", tags=["problems"])
 
 def _problem_service(request: Request) -> ProblemService:
     repository = ProblemRepository(request.app.state.settings.problems_dir)
-    return ProblemService(repository)
+    return ProblemService(request.app.state.database, repository)
 
 
 @router.get("/")
@@ -22,9 +22,9 @@ async def list_problems(request: Request, _current_user: CurrentUserDependency):
 
 
 @router.post("/")
-async def create_problem(request: Request, current_user: CurrentUserDependency):
+async def create_problem(request: Request, _admin: AdminUserDependency):
     problem = await parse_json_body(request, ProblemInput)
-    data = await _problem_service(request).create_problem(problem, current_user.role)
+    data = await _problem_service(request).create_problem(problem, _admin.role)
     return api_response(msg="add success", data=data)
 
 
@@ -42,11 +42,11 @@ async def get_problem(
 async def update_problem(
     problem_id: str,
     request: Request,
-    current_user: CurrentUserDependency,
+    _admin: AdminUserDependency,
 ):
     problem = await parse_json_body(request, ProblemInput)
     data = await _problem_service(request).update_problem(
-        problem_id, problem, current_user.role
+        problem_id, problem, _admin.role
     )
     return api_response(msg="update success", data=data)
 

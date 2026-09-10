@@ -390,7 +390,7 @@ def _render_result(
 ) -> None:
     problem = result["problem"]
     validation = result["validation"]
-    st.success("题目已生成，并已使用标准解重新计算全部样例和测试点输出。")
+    st.success("题目已生成，并已通过结构与测试点质量校验。")
     st.subheader(f"{problem['id']} · {problem['title']}")
     st.markdown(problem["description"])
     first, second = st.columns(2)
@@ -434,9 +434,6 @@ def _render_result(
 
     with st.expander("查看样例与测试点 JSON"):
         st.json({"samples": problem["samples"], "testcases": problem["testcases"]})
-    with st.expander("查看 Python 3 标准解"):
-        st.code(result["reference_solution"], language="python")
-
     existing_ids = {item["id"] for item in problems}
     operation = "编辑题目" if problem["id"] in existing_ids else "新建题目"
     accepted_key = f"accepted_ai_{artifact_key}"
@@ -684,7 +681,7 @@ def render_ai_page(
 ) -> None:
     st.header("AI 智能命题")
     st.caption(
-        "根据知识点和难度生成完整题目；后端会运行标准解并重算样例与测试点输出。"
+        "根据知识点和难度生成完整题目；系统会校验 JSON 结构和测试点质量。"
     )
     configured = _render_config(client, show_error)
     _render_habit_configs(client, show_error)

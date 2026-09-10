@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -117,7 +118,7 @@ async def test_create_list_get_and_update_problem(client, test_settings):
 
 
 @pytest.mark.asyncio
-async def test_only_admin_can_set_problem_resource_limits(client, test_settings):
+async def test_only_admin_can_create_or_update_problems(client, test_settings):
     await login_as_admin(client, test_settings)
     teacher_payload = problem_payload("teacher-limits")
     teacher_payload.update(
@@ -128,6 +129,10 @@ async def test_only_admin_can_set_problem_resource_limits(client, test_settings)
     await client.post("/api/auth/logout")
     await register_and_login(client, "student-author")
 
+    assert (
+        await client.post("/api/problems/", json=problem_payload("student-create"))
+    ).status_code == 403
+
     for field, value in (
         ("code_length_limit", 100),
         ("time_limit", 2),
@@ -137,29 +142,21 @@ async def test_only_admin_can_set_problem_resource_limits(client, test_settings)
         attempted_create[field] = value
         response = await client.post("/api/problems/", json=attempted_create)
         assert response.status_code == 403
-        assert response.json()["msg"] == "only teachers can set problem resource limits"
+        assert response.json()["msg"] == "permission denied"
 
-    attempted_update = problem_payload("teacher-limits", "Student edit")
-    attempted_update["memory_limit"] = 512
-    assert (
-        await client.put("/api/problems/teacher-limits", json=attempted_update)
-    ).status_code == 403
-
-    # Students may still edit ordinary problem content, but omitted resource limits
-    # are copied from the stored problem instead of reset to defaults.
-    allowed_update = problem_payload("teacher-limits", "Student content edit")
-    assert (
-        await client.put("/api/problems/teacher-limits", json=allowed_update)
-    ).status_code == 200
+    attempted_update = problem_payload("teacher-limits", "Student content edit")
+    response = await client.put("/api/problems/teacher-limits", json=attempted_update)
+    assert response.status_code == 403
     detail = (await client.get("/api/problems/teacher-limits")).json()["data"]
     assert detail["code_length_limit"] == 32
     assert detail["time_limit"] == 0.5
     assert detail["memory_limit"] == 64
+    assert detail["title"] == "A+B Problem"
 
 
 @pytest.mark.asyncio
-async def test_problem_validation_conflicts_and_error_order(client):
-    await register_and_login(client)
+async def test_problem_validation_conflicts_and_error_order(client, test_settings):
+    await login_as_admin(client, test_settings)
     assert (await client.post("/api/problems/", json=problem_payload())).status_code == 200
 
     duplicate = await client.post("/api/problems/", json=problem_payload())
@@ -182,8 +179,8 @@ async def test_problem_validation_conflicts_and_error_order(client):
 
 
 @pytest.mark.asyncio
-async def test_rejects_invalid_problem_configurations(client):
-    await register_and_login(client)
+async def test_rejects_invalid_problem_configurations(client, test_settings):
+    await login_as_admin(client, test_settings)
     invalid_payloads = []
 
     missing_required = problem_payload("missing-title")
@@ -224,8 +221,11 @@ async def test_rejects_invalid_problem_configurations(client):
 
 @pytest.mark.asyncio
 async def test_only_admin_can_delete_problems(client, test_settings):
-    await register_and_login(client)
+    await login_as_admin(client, test_settings)
     await client.post("/api/problems/", json=problem_payload())
+
+    await client.post("/api/auth/logout")
+    await register_and_login(client)
 
     forbidden_existing = await client.delete("/api/problems/P1001")
     assert forbidden_existing.status_code == 403
@@ -247,8 +247,58 @@ async def test_only_admin_can_delete_problems(client, test_settings):
 
 
 @pytest.mark.asyncio
+async def test_deleting_problem_removes_its_submissions_and_logs(client, app, test_settings):
+    await login_as_admin(client, test_settings)
+    problem_id = "delete-with-submissions"
+    created_problem = await client.post("/api/problems/", json=problem_payload(problem_id))
+    assert created_problem.status_code == 200
+
+    created_submission = await client.post(
+        "/api/submissions/",
+        json={
+            "problem_id": problem_id,
+            "language": "python",
+            "code": "a, b = map(int, input().split())\nprint(a + b)",
+        },
+    )
+    submission_id = created_submission.json()["data"]["submission_id"]
+    for _ in range(100):
+        submission = await app.state.database.fetch_one(
+            "SELECT status FROM submissions WHERE submission_id = ?", (submission_id,)
+        )
+        if submission is not None and submission["status"] == "success":
+            break
+        await asyncio.sleep(0.02)
+    else:
+        pytest.fail("submission did not finish")
+
+    assert (await client.get(f"/api/submissions/{submission_id}/log")).status_code == 200
+    assert await app.state.database.fetch_one(
+        "SELECT 1 FROM testcase_results WHERE submission_id = ?", (submission_id,)
+    )
+    assert await app.state.database.fetch_one(
+        "SELECT 1 FROM access_logs WHERE submission_id = ?", (submission_id,)
+    )
+
+    assert (await client.delete(f"/api/problems/{problem_id}")).status_code == 200
+    assert (await client.get(f"/api/submissions/{submission_id}")).status_code == 404
+    assert (await client.get("/api/submissions/", params={"problem_id": problem_id})).json()[
+        "data"
+    ]["total"] == 0
+    assert await app.state.database.fetch_one(
+        "SELECT 1 FROM submissions WHERE submission_id = ?", (submission_id,)
+    ) is None
+    assert await app.state.database.fetch_one(
+        "SELECT 1 FROM testcase_results WHERE submission_id = ?", (submission_id,)
+    ) is None
+    assert await app.state.database.fetch_one(
+        "SELECT 1 FROM access_logs WHERE submission_id = ?", (submission_id,)
+    ) is None
+
+
+@pytest.mark.asyncio
 async def test_problem_files_persist_across_application_restarts(client, test_settings):
-    await register_and_login(client)
+    await login_as_admin(client, test_settings)
     await client.post("/api/problems/", json=problem_payload("persistent-problem"))
 
     restarted_app = create_app(test_settings)
@@ -264,7 +314,7 @@ async def test_problem_files_persist_across_application_restarts(client, test_se
 
 @pytest.mark.asyncio
 async def test_problem_list_is_stable_and_stored_corruption_is_safe(client, test_settings):
-    await register_and_login(client)
+    await login_as_admin(client, test_settings)
     await client.post("/api/problems/", json=problem_payload("problem-z", "Z problem"))
     await client.post("/api/problems/", json=problem_payload("problem-a", "A problem"))
 

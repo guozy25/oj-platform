@@ -7,10 +7,20 @@ from app.models.judge import SubmissionCreate
 from app.repositories.problems import ProblemRepository
 from app.services.submissions import SubmissionService
 from tests.test_judge import problem_payload, submit, wait_for_result
+from tests.test_problems import login_as_admin
 from tests.test_users import login, register
 
 
-async def create_problem(client, problem_id: str, *, sleep_limit: float | None = None) -> None:
+async def create_problem(
+    client,
+    test_settings,
+    username: str,
+    problem_id: str,
+    *,
+    sleep_limit: float | None = None,
+) -> None:
+    await client.post("/api/auth/logout")
+    await login_as_admin(client, test_settings)
     response = await client.post(
         "/api/problems/",
         json=problem_payload(
@@ -20,13 +30,15 @@ async def create_problem(client, problem_id: str, *, sleep_limit: float | None =
         ),
     )
     assert response.status_code == 200
+    await client.post("/api/auth/logout")
+    await login(client, username, "secret123")
 
 
 @pytest.mark.asyncio
 async def test_submission_detail_permissions_and_response_shape(client, app, test_settings):
     alice = (await register(client, "detail-alice")).json()["data"]
     await login(client, "detail-alice", "secret123")
-    await create_problem(client, "detail-problem")
+    await create_problem(client, test_settings, "detail-alice", "detail-problem")
 
     created = await submit(
         client,
@@ -72,7 +84,9 @@ async def test_submission_detail_permissions_and_response_shape(client, app, tes
         test_settings.initial_admin_username,
         test_settings.initial_admin_password,
     )
-    assert (await client.get(f"/api/submissions/{submission_id}")).status_code == 200
+    admin_detail = await client.get(f"/api/submissions/{submission_id}")
+    assert admin_detail.status_code == 200
+    assert "testcase_results" not in admin_detail.json()["data"]
     assert (await client.get("/api/submissions/not-a-real-id")).status_code == 404
 
     await client.post("/api/auth/logout")
@@ -84,8 +98,8 @@ async def test_submission_detail_permissions_and_response_shape(client, app, tes
 async def test_submission_list_filters_pagination_and_summaries(client, app, test_settings):
     alice = (await register(client, "list-alice")).json()["data"]
     await login(client, "list-alice", "secret123")
-    await create_problem(client, "list-problem-a")
-    await create_problem(client, "list-problem-b")
+    await create_problem(client, test_settings, "list-alice", "list-problem-a")
+    await create_problem(client, test_settings, "list-alice", "list-problem-b")
 
     created = [
         await submit(client, "list-problem-a", "print('done')"),
@@ -200,7 +214,7 @@ async def test_submission_list_filters_pagination_and_summaries(client, app, tes
 async def test_admin_rejudge_reuses_submission_and_replaces_results(client, app, test_settings):
     await register(client, "rejudge-user")
     await login(client, "rejudge-user", "secret123")
-    await create_problem(client, "rejudge-problem")
+    await create_problem(client, test_settings, "rejudge-user", "rejudge-problem")
     created = await submit(
         client,
         "rejudge-problem",
@@ -243,7 +257,7 @@ async def test_admin_rejudge_reuses_submission_and_replaces_results(client, app,
 async def test_pending_submission_is_resumed_after_restart(client, app, test_settings):
     user = (await register(client, "restart-user")).json()["data"]
     await login(client, "restart-user", "secret123")
-    await create_problem(client, "restart-problem")
+    await create_problem(client, test_settings, "restart-user", "restart-problem")
     service = SubmissionService(
         app.state.database,
         ProblemRepository(test_settings.problems_dir),

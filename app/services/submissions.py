@@ -76,6 +76,9 @@ class SubmissionService:
             raise APIError(404, "submission not found")
         if current_role != "admin" and row["user_id"] != current_user_id:
             raise APIError(403, "permission denied")
+        # Step 2/3 only expose the submission summary. Per-testcase results must
+        # go through the Step-5 log endpoint so its visibility policy and access
+        # audit cannot be bypassed by owners or administrators.
         return self._detail(row)
 
     async def list_submissions(

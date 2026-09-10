@@ -1,4 +1,5 @@
 from app.core.errors import APIError
+from app.db.database import Database
 from app.models.problems import ProblemInput, ProblemModel
 from app.repositories.problems import ProblemRepository
 
@@ -8,7 +9,8 @@ RESOURCE_LIMIT_FIELDS = frozenset(
 
 
 class ProblemService:
-    def __init__(self, repository: ProblemRepository) -> None:
+    def __init__(self, database: Database, repository: ProblemRepository) -> None:
+        self.database = database
         self.repository = repository
 
     async def list_problems(self) -> list[dict[str, str]]:
@@ -48,6 +50,13 @@ class ProblemService:
         return {"id": problem.id}
 
     async def delete_problem(self, problem_id: str) -> dict[str, str]:
+        # Confirm that the configuration exists before removing database records.
+        # Deleting submissions cascades to testcase results and Step-5 access logs.
+        await self.repository.get(problem_id)
+        await self.database.execute(
+            "DELETE FROM submissions WHERE problem_id = ?",
+            (problem_id,),
+        )
         await self.repository.delete(problem_id)
         return {"id": problem_id}
 

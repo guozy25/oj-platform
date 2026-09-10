@@ -126,6 +126,15 @@ def test_login_form_401_remains_a_visible_credentials_error(monkeypatch):
     assert messages == ["请先登录：invalid username or password"]
 
 
+def test_registration_duplicate_username_shows_friendly_message(monkeypatch):
+    messages: list[str] = []
+    monkeypatch.setattr(ui, "st", SimpleNamespace(error=messages.append))
+
+    ui._show_registration_error(APIClientError("username already exists", status_code=400))
+
+    assert messages == ["用户名已存在"]
+
+
 def test_successful_problem_mutation_schedules_fresh_list_and_reruns(monkeypatch):
     class RerunRequested(RuntimeError):
         pass
@@ -162,6 +171,153 @@ def test_student_navigation_embeds_submission_features_under_problems():
     assert "提交记录" in teacher_pages
     assert "AI 智能命题" not in student_pages
     assert "AI 智能命题" in teacher_pages
+
+
+def test_problem_operations_show_management_actions_only_to_admins():
+    assert ui._problem_operations({"role": "user"}) == ["题目列表"]
+    assert ui._problem_operations({"role": "admin"}) == [
+        "题目列表",
+        "新建题目",
+        "编辑题目",
+        "删除题目",
+    ]
+
+
+def test_testcase_result_rows_use_human_readable_verdicts_and_resource_units():
+    assert ui._testcase_result_rows(
+        [
+            {"id": 1, "result": "AC", "time": 0.01234, "memory": 8.5},
+            {"id": 2, "result": "TLE", "time": 3, "memory": 12},
+            {"id": 3, "result": "MLE", "time": 0.2, "memory": 128},
+            {"id": 4, "result": "CE", "time": 0, "memory": 0},
+            {"id": 5, "result": "RE", "time": 0.1, "memory": 6},
+        ]
+    ) == [
+        {"测试点": "#1", "状态": "通过", "运行时间": "0.012 s", "内存": "8.500 MB"},
+        {"测试点": "#2", "状态": "时间超限", "运行时间": "3.000 s", "内存": "12.000 MB"},
+        {"测试点": "#3", "状态": "内存超限", "运行时间": "0.200 s", "内存": "128.000 MB"},
+        {"测试点": "#4", "状态": "编译失败", "运行时间": "0.000 s", "内存": "0.000 MB"},
+        {"测试点": "#5", "状态": "运行错误", "运行时间": "0.100 s", "内存": "6.000 MB"},
+    ]
+
+
+def test_submission_detail_loads_testcases_from_step5_log_endpoint(monkeypatch):
+    requests: list[str] = []
+    rendered_tables: list[list[dict[str, str]]] = []
+
+    class FakeColumn:
+        def metric(self, _label, _value):
+            return None
+
+        def button(self, label, **_kwargs):
+            return label == "查看评测日志"
+
+    class FakeClient:
+        def get(self, path):
+            requests.append(path)
+            if path.endswith("/log"):
+                return SimpleNamespace(
+                    data={
+                        "score": 10,
+                        "counts": 20,
+                        "details": [
+                            {"id": 1, "result": "AC", "time": 0.01, "memory": 4.0}
+                        ],
+                    }
+                )
+            return SimpleNamespace(
+                data={
+                    "submission_id": "submission-1",
+                    "status": "success",
+                    "score": 10,
+                    "counts": 20,
+                    "compile_info": None,
+                    "run_info": None,
+                    "error_info": "",
+                }
+            )
+
+    fake_streamlit = SimpleNamespace(
+        subheader=lambda _text: None,
+        columns=lambda count: [FakeColumn() for _ in range(count)],
+        info=lambda _text: None,
+        error=lambda _text: None,
+        caption=lambda _text: None,
+        markdown=lambda _text: None,
+        dataframe=lambda rows, **_kwargs: rendered_tables.append(rows),
+    )
+    monkeypatch.setattr(ui, "st", fake_streamlit)
+    monkeypatch.setattr(ui, "_client", lambda: FakeClient())
+
+    ui._render_submission_detail("submission-1", is_admin=False)
+
+    assert requests == [
+        "/api/submissions/submission-1",
+        "/api/submissions/submission-1/log",
+    ]
+    assert rendered_tables == [
+        [
+            {
+                "测试点": "#1",
+                "状态": "通过",
+                "运行时间": "0.010 s",
+                "内存": "4.000 MB",
+            }
+        ]
+    ]
+
+
+def test_audit_rows_show_username_and_explain_the_audited_action():
+    assert ui._audit_display_rows(
+        [
+            {
+                "user_id": "user-1",
+                "problem_id": "P1001",
+                "action": "view_logs",
+                "time": "2026-09-10T01:02:03+00:00",
+                "status": "403",
+            }
+        ],
+        {"user-1": "alice"},
+    ) == [
+        {
+            "用户": "alice",
+            "用户 ID": "user-1",
+            "题目 ID": "P1001",
+            "操作": "查看评测日志",
+            "访问时间": "2026-09-10T01:02:03+00:00",
+            "HTTP 状态": "403",
+        }
+    ]
+
+
+def test_problem_deletion_displays_the_selected_problem_before_confirmation(monkeypatch):
+    events: list[str] = []
+
+    fake_streamlit = SimpleNamespace(
+        info=lambda message: events.append(f"info:{message}"),
+        selectbox=lambda _label, options, **_kwargs: options[1],
+        divider=lambda: events.append("divider"),
+        warning=lambda message: events.append(f"warning:{message}"),
+        checkbox=lambda _label, **_kwargs: False,
+        button=lambda _label, **_kwargs: False,
+    )
+    monkeypatch.setattr(ui, "st", fake_streamlit)
+    monkeypatch.setattr(
+        ui,
+        "_render_problem_detail",
+        lambda problem_id: events.append(f"detail:{problem_id}") or True,
+    )
+
+    ui._render_problem_deletion(
+        [{"id": "P1", "title": "First"}, {"id": "P2", "title": "Second"}]
+    )
+
+    assert events == [
+        "detail:P2",
+        "divider",
+        "warning:删除题目后无法恢复，请谨慎操作。",
+    ]
 
 
 def test_pending_navigation_is_applied_before_sidebar_widget(monkeypatch):

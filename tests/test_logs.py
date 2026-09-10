@@ -1,5 +1,3 @@
-import json
-
 import pytest
 
 from tests.test_judge import problem_payload, submit, wait_for_result
@@ -20,9 +18,20 @@ async def test_log_endpoints_require_authentication_before_validation(client):
 @pytest.mark.asyncio
 async def test_only_visibility_endpoint_can_change_public_cases(client, test_settings):
     await register(client, "visibility-user")
-    await login(client, "visibility-user", "secret123")
     payload = problem_payload("visibility-problem")
+    await login_as_admin(client, test_settings)
     assert (await client.post("/api/problems/", json=payload)).status_code == 200
+
+    injected_create = problem_payload("injected-visibility")
+    injected_create["public_cases"] = True
+    assert (await client.post("/api/problems/", json=injected_create)).status_code == 400
+    injected_update = {**payload, "public_cases": True}
+    assert (
+        await client.put("/api/problems/visibility-problem", json=injected_update)
+    ).status_code == 400
+
+    await client.post("/api/auth/logout")
+    await login(client, "visibility-user", "secret123")
 
     forbidden = await client.put(
         "/api/problems/visibility-problem/log_visibility",
@@ -32,14 +41,9 @@ async def test_only_visibility_endpoint_can_change_public_cases(client, test_set
     assert (
         await client.get("/api/problems/visibility-problem/log_visibility")
     ).status_code == 403
-
-    injected_create = problem_payload("injected-visibility")
-    injected_create["public_cases"] = True
-    assert (await client.post("/api/problems/", json=injected_create)).status_code == 400
-    injected_update = {**payload, "public_cases": True}
     assert (
-        await client.put("/api/problems/visibility-problem", json=injected_update)
-    ).status_code == 400
+        await client.put("/api/problems/visibility-problem", json=payload)
+    ).status_code == 403
 
     await client.post("/api/auth/logout")
     await login_as_admin(client, test_settings)
@@ -90,9 +94,7 @@ async def test_only_visibility_endpoint_can_change_public_cases(client, test_set
     updated_payload = {**payload, "title": "Updated without changing visibility"}
     assert (
         await client.put("/api/problems/visibility-problem", json=updated_payload)
-    ).status_code == 200
-    stored_path = test_settings.problems_dir / "visibility-problem.json"
-    assert json.loads(stored_path.read_text(encoding="utf-8"))["public_cases"] is True
+    ).status_code == 403
     assert (
         "public_cases" not in (await client.get("/api/problems/visibility-problem")).json()["data"]
     )
@@ -118,12 +120,14 @@ async def test_only_visibility_endpoint_can_change_public_cases(client, test_set
 @pytest.mark.asyncio
 async def test_log_visibility_permissions_and_access_audit(client, app, test_settings):
     alice = (await register(client, "log-alice")).json()["data"]
-    await login(client, "log-alice", "secret123")
+    await login_as_admin(client, test_settings)
     created_problem = await client.post(
         "/api/problems/",
         json=problem_payload("logged-problem"),
     )
     assert created_problem.status_code == 200
+    await client.post("/api/auth/logout")
+    await login(client, "log-alice", "secret123")
     created_submission = await submit(
         client,
         "logged-problem",
@@ -135,6 +139,9 @@ async def test_log_visibility_permissions_and_access_audit(client, app, test_set
     private_owner_log = await client.get(f"/api/submissions/{submission_id}/log")
     assert private_owner_log.status_code == 200
     assert private_owner_log.json()["data"] == {"score": 20, "counts": 20}
+    # Step 2/3 must not provide a side door around Step-5 detail visibility.
+    owner_summary = await client.get(f"/api/submissions/{submission_id}")
+    assert "testcase_results" not in owner_summary.json()["data"]
 
     bob = (await register(client, "log-bob")).json()["data"]
     await client.post("/api/auth/logout")
@@ -152,6 +159,8 @@ async def test_log_visibility_permissions_and_access_audit(client, app, test_set
     assert all(
         set(detail) == {"id", "result", "time", "memory"} for detail in admin_data["details"]
     )
+    admin_summary = await client.get(f"/api/submissions/{submission_id}")
+    assert "testcase_results" not in admin_summary.json()["data"]
 
     made_public = await client.put(
         "/api/problems/logged-problem/log_visibility",
