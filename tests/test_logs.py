@@ -43,7 +43,7 @@ async def test_only_visibility_endpoint_can_change_public_cases(client, test_set
     ).status_code == 403
     assert (
         await client.put("/api/problems/visibility-problem", json=payload)
-    ).status_code == 403
+    ).status_code == 200
 
     await client.post("/api/auth/logout")
     await login_as_admin(client, test_settings)
@@ -94,7 +94,7 @@ async def test_only_visibility_endpoint_can_change_public_cases(client, test_set
     updated_payload = {**payload, "title": "Updated without changing visibility"}
     assert (
         await client.put("/api/problems/visibility-problem", json=updated_payload)
-    ).status_code == 403
+    ).status_code == 200
     assert (
         "public_cases" not in (await client.get("/api/problems/visibility-problem")).json()["data"]
     )

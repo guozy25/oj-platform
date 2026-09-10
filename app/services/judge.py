@@ -11,6 +11,7 @@ import sys
 import time
 from contextlib import suppress
 from dataclasses import dataclass
+from math import ceil
 from pathlib import Path
 from tempfile import mkdtemp
 
@@ -20,6 +21,7 @@ from app.core.config import Settings
 from app.db.database import Database
 from app.repositories.problems import ProblemRepository
 from app.services.languages import LanguageConfiguration, LanguageService
+from app.services.sandbox import build_bubblewrap_command
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +38,23 @@ class ProcessResult:
     output_exceeded: bool = False
 
 
-def _linux_memory_limiter(memory_limit_mb: int):
+def _linux_resource_limiter(
+    memory_limit_mb: int,
+    timeout_seconds: float,
+    max_processes: int,
+    max_file_size_mb: int,
+):
     def apply_limit() -> None:
         import resource
 
         limit_bytes = memory_limit_mb * 1024 * 1024
         resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+        resource.setrlimit(resource.RLIMIT_CPU, (max(1, ceil(timeout_seconds)),) * 2)
+        resource.setrlimit(resource.RLIMIT_FSIZE, (max_file_size_mb * 1024 * 1024,) * 2)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
+        if hasattr(resource, "RLIMIT_NPROC"):
+            resource.setrlimit(resource.RLIMIT_NPROC, (max_processes, max_processes))
 
     return apply_limit
 
@@ -83,6 +95,60 @@ async def _monitor_memory(
         logger.debug("Memory monitor stopped before process accounting was available")
 
 
+async def _write_process_input(
+    stream: asyncio.StreamWriter | None, input_text: str
+) -> None:
+    if stream is None:
+        return
+    try:
+        stream.write(input_text.encode("utf-8"))
+        await stream.drain()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
+    finally:
+        stream.close()
+        with suppress(BrokenPipeError, ConnectionResetError):
+            await stream.wait_closed()
+
+
+async def _read_bounded_stream(
+    stream: asyncio.StreamReader | None,
+    process: asyncio.subprocess.Process,
+    max_output_bytes: int,
+) -> tuple[bytes, bool]:
+    if stream is None:
+        return b"", False
+    collected = bytearray()
+    while chunk := await stream.read(65_536):
+        remaining = max_output_bytes - len(collected)
+        if remaining > 0:
+            collected.extend(chunk[:remaining])
+        if len(chunk) > remaining:
+            _kill_process_group(process)
+            return bytes(collected), True
+    return bytes(collected), False
+
+
+async def _communicate_bounded(
+    process: asyncio.subprocess.Process,
+    input_text: str,
+    max_output_bytes: int,
+) -> tuple[bytes, bytes, bool]:
+    input_task = asyncio.create_task(_write_process_input(process.stdin, input_text))
+    stdout_task = asyncio.create_task(
+        _read_bounded_stream(process.stdout, process, max_output_bytes)
+    )
+    stderr_task = asyncio.create_task(
+        _read_bounded_stream(process.stderr, process, max_output_bytes)
+    )
+    await input_task
+    (stdout_bytes, stdout_exceeded), (stderr_bytes, stderr_exceeded) = (
+        await asyncio.gather(stdout_task, stderr_task)
+    )
+    await process.wait()
+    return stdout_bytes, stderr_bytes, stdout_exceeded or stderr_exceeded
+
+
 async def run_process(
     command: list[str],
     *,
@@ -91,36 +157,57 @@ async def run_process(
     timeout_seconds: float,
     memory_limit_mb: int,
     max_output_bytes: int,
+    settings: Settings,
 ) -> ProcessResult:
-    preexec_fn = _linux_memory_limiter(memory_limit_mb) if sys.platform == "linux" else None
+    preexec_fn = (
+        _linux_resource_limiter(
+            memory_limit_mb,
+            timeout_seconds,
+            settings.sandbox_max_processes,
+            settings.sandbox_max_file_size_mb,
+        )
+        if sys.platform == "linux"
+        else None
+    )
+    execution_command = (
+        build_bubblewrap_command(settings, command, cwd)
+        if settings.sandbox_enabled
+        else command
+    )
+    environment = None
+    if settings.sandbox_enabled:
+        environment = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}
     started = time.perf_counter()
     process = await asyncio.create_subprocess_exec(
-        *command,
+        *execution_command,
         cwd=cwd,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
         preexec_fn=preexec_fn,
+        env=environment,
     )
     memory_state: dict[str, float | bool] = {
         "peak_memory_mb": 0.0,
         "memory_exceeded": False,
     }
     monitor_task = asyncio.create_task(_monitor_memory(process, memory_limit_mb, memory_state))
+    communication_task = asyncio.create_task(
+        _communicate_bounded(process, input_text, max_output_bytes)
+    )
     timed_out = False
     try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            process.communicate(input_text.encode("utf-8")),
-            timeout=timeout_seconds,
+        stdout_bytes, stderr_bytes, output_exceeded = await asyncio.wait_for(
+            asyncio.shield(communication_task), timeout=timeout_seconds
         )
     except asyncio.TimeoutError:
         timed_out = True
         _kill_process_group(process)
-        stdout_bytes, stderr_bytes = await process.communicate()
+        stdout_bytes, stderr_bytes, output_exceeded = await communication_task
     except asyncio.CancelledError:
         _kill_process_group(process)
-        await process.communicate()
+        await communication_task
         raise
     finally:
         monitor_task.cancel()
@@ -128,9 +215,8 @@ async def run_process(
             await monitor_task
 
     elapsed = time.perf_counter() - started
-    output_exceeded = len(stdout_bytes) > max_output_bytes or len(stderr_bytes) > max_output_bytes
-    stdout = stdout_bytes[:max_output_bytes].decode("utf-8", errors="replace")
-    stderr = stderr_bytes[:max_output_bytes].decode("utf-8", errors="replace")
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
     return ProcessResult(
         returncode=process.returncode if process.returncode is not None else -1,
         stdout=stdout,
@@ -261,6 +347,7 @@ class JudgeService:
                 timeout_seconds=self.settings.compile_time_limit,
                 memory_limit_mb=max(512, memory_limit),
                 max_output_bytes=self.settings.max_program_output_bytes,
+                settings=self.settings,
             )
             compile_message = _safe_message(
                 compile_result.stderr or compile_result.stdout, working_directory
@@ -305,6 +392,7 @@ class JudgeService:
                 timeout_seconds=time_limit,
                 memory_limit_mb=memory_limit,
                 max_output_bytes=self.settings.max_program_output_bytes,
+                settings=self.settings,
             )
             if result.memory_exceeded or _looks_like_memory_error(result.stderr):
                 verdict = "MLE"

@@ -5,7 +5,8 @@
 
 ## 本地开发
 
-要求 Python 3.10 或更高版本。
+要求 Python 3.10 或更高版本。正式评测必须运行在 Linux 上并安装 Bubblewrap；服务会在
+启动时执行沙箱自检，无法建立隔离时直接拒绝启动，不会降级为服务账户直接运行代码。
 
 ```bash
 python3.13 -m venv .venv
@@ -13,6 +14,9 @@ source .venv/bin/activate
 python -m pip install -r requirements-dev.txt
 uvicorn app.main:app
 ```
+
+macOS 等非 Linux 环境只能用于受信任代码的本地界面/API 开发，可显式设置
+`OJ_SANDBOX_ENABLED=false` 跳过评测沙箱；不得在对外服务或接收不可信代码时关闭沙箱。
 
 AI 命题任务会持续写入 `data/oj.db` 更新进度。不要使用 `--reload` 启动后端，
 否则文件监控可能触发服务重启并中断正在执行的命题任务。
@@ -60,7 +64,7 @@ password: admintestpassword
 题目配置保存在 `problems/` 下，每题一个 UTF-8 JSON 文件。写入采用临时文件和
 原子替换，运行时文件不会出现半写入状态。每道题都有 `code_length_limit`、
 `time_limit` 和 `memory_limit` 三项资源限制，默认分别为 200000 字符、3 秒和
-128 MB。题目的创建、编辑和删除仅限管理员（老师）；普通用户只能查看题目和提交代码。
+128 MB。所有已登录用户均可创建、编辑题目和设置资源限制；删除题目仅限管理员（老师）。
 代码长度在接收提交和实际评测前都会校验，
 运行时间和内存限制由评测进程按题目配置执行。
 
@@ -106,11 +110,11 @@ Streamlit 前端页面：
   ID，也可随机生成当前题库中未使用的 ID，所有栏目均标注必填或选填；
 - 提交列表、状态刷新、编译/运行/错误信息和评测日志；
 - 管理员用户列表、角色修改、管理员创建、提交重判和访问审计。
-- 管理员专用的 AI 智能命题、生成进度、任务中断、历史任务和题目导入。
+- 所有已登录用户可使用 AI 智能命题、生成进度、任务中断、历史任务和题目导入。
 
 AI 智能命题接口：
 
-以下接口均仅允许管理员访问，普通用户请求会返回 `403`：
+以下接口对所有已登录用户开放；模型配置和习惯配置按用户隔离，任务详情由创建者或管理员访问：
 
 - `GET` / `PUT /api/ai/model-config`：查询脱敏配置、更新 OpenAI 兼容模型配置；
 - `GET` / `POST /api/ai/habit-configs/`：列出或保存当前用户的习惯配置，最多 10 个；
@@ -141,9 +145,17 @@ Chat Completions 的 API 根地址或完整的 `/chat/completions` 地址。Toke
 上一个已验证版本仍可查看、导出和继续修改；通过后可将任意版本导入题目页面人工审阅。
 
 系统启动时会注册 Python 和 C++14。后台评测使用 `asyncio` 子进程，逐测试点记录
-AC、WA、RE、TLE、MLE 或 CE，限制运行时间、内存和输出长度。生产验收环境应为
-Linux，并提供 `python3` 和支持 C++14 的 `g++`。服务重启时会自动恢复数据库中未完成的
-`pending` 任务。
+AC、WA、RE、TLE、MLE 或 CE。编译和运行均由 Bubblewrap 包装：每次提交只能写入自己的
+临时工作目录，只读访问必要的系统运行库，并隔离用户、PID、IPC、网络、UTS、cgroup 与挂载
+命名空间；沙箱内环境变量会被清空，能力集全部移除，同时限制运行时间、内存、输出、进程数、
+打开文件数和单文件大小。服务拒绝以 root 身份启动，生产环境建议为其使用独立系统账户。
+服务重启时会自动恢复数据库中未完成的 `pending` 任务。
+
+可通过 `OJ_SANDBOX_EXECUTABLE` 指定 Bubblewrap 路径。确有额外语言运行库时，可使用
+`OJ_SANDBOX_READ_ONLY_PATHS` 按系统路径分隔符添加只读绝对路径；不要挂载项目目录、数据库、
+密钥或用户主目录。临时文件系统、进程数和单文件大小上限分别由
+`OJ_SANDBOX_TMPFS_SIZE_MB`、`OJ_SANDBOX_MAX_PROCESSES` 和
+`OJ_SANDBOX_MAX_FILE_SIZE_MB` 配置。
 
 ## 测试与静态检查
 
@@ -154,11 +166,11 @@ ruff check .
 
 ## Linux 验收
 
-最终验收环境需要 Linux、Python 3.10+、GCC 9+ 和 C++14 支持。在 Ubuntu/Debian 上可执行：
+最终验收环境需要 Linux、Python 3.10+、GCC 9+、C++14 和 Bubblewrap。在 Ubuntu/Debian 上可执行：
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y python3 python3-venv g++
+sudo apt-get install -y python3 python3-venv g++ bubblewrap
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-dev.txt

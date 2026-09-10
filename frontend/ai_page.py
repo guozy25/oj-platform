@@ -104,10 +104,10 @@ def _render_config(
             )
             select_column, save_column = st.columns(2)
             selected = select_column.form_submit_button(
-                "选定模型配置", type="primary", use_container_width=True
+                "选定模型配置", type="primary", width="stretch"
             )
             saved_as_habit = save_column.form_submit_button(
-                "保存为习惯配置", type="primary", use_container_width=True
+                "保存为习惯配置", type="primary", width="stretch"
             )
         if selected or saved_as_habit:
             if not api_key.strip():
@@ -174,7 +174,7 @@ def _render_habit_configs(
             for item in habits
         ],
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
     )
     by_id = {item["config_id"]: item for item in habits}
     default_index = next(
@@ -198,7 +198,7 @@ def _render_habit_configs(
     if st.button(
         "选用此习惯配置",
         type="primary",
-        use_container_width=True,
+        width="stretch",
         key=f"select_habit_{config_id}",
     ):
         try:
@@ -245,7 +245,7 @@ def _render_habit_configs(
                 step=256,
             )
             updated = st.form_submit_button(
-                "保存习惯配置修改", type="primary", use_container_width=True
+                "保存习惯配置修改", type="primary", width="stretch"
             )
         if updated:
             payload = {
@@ -427,7 +427,7 @@ def _render_result(
         }
         for index, purpose in enumerate(validation["testcase_purposes"], start=1)
     ]
-    st.dataframe(purposes, hide_index=True, use_container_width=True)
+    st.dataframe(purposes, hide_index=True, width="stretch")
     for warning in validation.get("warnings", []):
         st.warning(warning)
 
@@ -618,9 +618,9 @@ def _render_active_task(
 
     if status in {"pending", "running"}:
         left, right = st.columns(2)
-        if left.button("立即刷新", use_container_width=True):
+        if left.button("立即刷新", width="stretch"):
             st.rerun()
-        if right.button("中断任务", use_container_width=True):
+        if right.button("中断任务", width="stretch"):
             try:
                 client.put(f"/api/ai/problem-tasks/{task_id}/cancel")
             except APIClientError as exc:
@@ -662,7 +662,7 @@ def _render_history(
             }
             for task in tasks
         ]
-        st.dataframe(rows, hide_index=True, use_container_width=True)
+        st.dataframe(rows, hide_index=True, width="stretch")
         selected = st.selectbox(
             "恢复查看任务",
             [task["task_id"] for task in tasks],

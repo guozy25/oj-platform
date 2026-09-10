@@ -239,6 +239,25 @@ async def test_admin_rejudge_reuses_submission_and_replaces_results(client, app,
         "msg": "rejudge started",
         "data": {"submission_id": submission_id, "status": "pending"},
     }
+    pending_row = await app.state.database.fetch_one(
+        """
+        SELECT status, score, counts, compile_info, run_info, error_info
+        FROM submissions
+        WHERE submission_id = ?
+        """,
+        (submission_id,),
+    )
+    assert dict(pending_row) == {
+        "status": "pending",
+        "score": None,
+        "counts": None,
+        "compile_info": None,
+        "run_info": None,
+        "error_info": None,
+    }
+    assert await app.state.database.fetch_all(
+        "SELECT testcase_id FROM testcase_results WHERE submission_id = ?", (submission_id,)
+    ) == []
     final_row = await wait_for_result(app, submission_id)
     assert final_row["status"] == "success"
     assert final_row["score"] == 10

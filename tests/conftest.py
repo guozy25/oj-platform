@@ -15,6 +15,7 @@ def test_settings(tmp_path: Path) -> Settings:
         database_path=tmp_path / "data" / "test.db",
         problems_dir=tmp_path / "problems",
         runtime_dir=tmp_path / "runtime",
+        sandbox_enabled=False,
     )
 
 

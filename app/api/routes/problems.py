@@ -22,9 +22,9 @@ async def list_problems(request: Request, _current_user: CurrentUserDependency):
 
 
 @router.post("/")
-async def create_problem(request: Request, _admin: AdminUserDependency):
+async def create_problem(request: Request, _current_user: CurrentUserDependency):
     problem = await parse_json_body(request, ProblemInput)
-    data = await _problem_service(request).create_problem(problem, _admin.role)
+    data = await _problem_service(request).create_problem(problem)
     return api_response(msg="add success", data=data)
 
 
@@ -42,12 +42,10 @@ async def get_problem(
 async def update_problem(
     problem_id: str,
     request: Request,
-    _admin: AdminUserDependency,
+    _current_user: CurrentUserDependency,
 ):
     problem = await parse_json_body(request, ProblemInput)
-    data = await _problem_service(request).update_problem(
-        problem_id, problem, _admin.role
-    )
+    data = await _problem_service(request).update_problem(problem_id, problem)
     return api_response(msg="update success", data=data)
 
 

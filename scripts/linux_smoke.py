@@ -70,7 +70,7 @@ def _submit_and_expect_ac(client: httpx.Client, language: str, code: str) -> Non
         raise AssertionError(f"{language} judge smoke test failed: {result}")
 
 
-def _exercise_live_server(base_url: str) -> None:
+def _exercise_live_server(base_url: str, temporary_path: Path) -> None:
     with httpx.Client(base_url=base_url, timeout=5, trust_env=False) as client:
         _require(client.get("/api/health"))
         user = _require(
@@ -104,6 +104,39 @@ def _exercise_live_server(base_url: str) -> None:
             "cpp",
             "#include <iostream>\nint main(){long long a,b;std::cin>>a>>b;std::cout<<a+b;}\n",
         )
+        marker = temporary_path / "sandbox-escaped.txt"
+        secret = temporary_path / "host-secret.txt"
+        secret.write_text("must-not-leak", encoding="utf-8")
+        port = int(base_url.rsplit(":", 1)[1])
+        sandbox_probe = "\n".join(
+            [
+                "import os, socket",
+                "safe = True",
+                f"secret = {str(secret)!r}",
+                f"marker = {str(marker)!r}",
+                "try:",
+                "    open(secret).read()",
+                "    safe = False",
+                "except OSError:",
+                "    pass",
+                "try:",
+                "    open(marker, 'w').write('escaped')",
+                "    safe = False",
+                "except OSError:",
+                "    pass",
+                "try:",
+                f"    socket.create_connection(('127.0.0.1', {port}), timeout=0.2)",
+                "    safe = False",
+                "except OSError:",
+                "    pass",
+                "if 'OJ_SANDBOX_SMOKE_SECRET' in os.environ:",
+                "    safe = False",
+                "print(3 if safe else 0)",
+            ]
+        )
+        _submit_and_expect_ac(client, "python", sandbox_probe)
+        if marker.exists():
+            raise AssertionError("sandboxed submission wrote outside its workspace")
 
         _require(client.post("/api/auth/logout"))
         _require(
@@ -135,6 +168,7 @@ def main() -> None:
                 "OJ_DATABASE_PATH": str(temporary_path / "data" / "oj.db"),
                 "OJ_PROBLEMS_DIR": str(temporary_path / "problems"),
                 "OJ_RUNTIME_DIR": str(temporary_path / "runtime"),
+                "OJ_SANDBOX_SMOKE_SECRET": "must-not-leak",
             }
         )
         process = subprocess.Popen(
@@ -171,7 +205,7 @@ def main() -> None:
                 else:
                     raise TimeoutError("Uvicorn did not become ready")
 
-            _exercise_live_server(base_url)
+            _exercise_live_server(base_url, temporary_path)
         except BaseException as exc:
             failure = exc
         finally:

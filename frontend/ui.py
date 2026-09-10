@@ -121,7 +121,7 @@ def _configure_sidebar() -> None:
     st.sidebar.header("连接设置")
     with st.sidebar.form("backend_settings"):
         entered_url = st.text_input("后端 API 地址", value=st.session_state.api_base_url)
-        changed = st.form_submit_button("应用地址", use_container_width=True)
+        changed = st.form_submit_button("应用地址", width="stretch")
     if changed:
         try:
             normalized = normalize_base_url(entered_url)
@@ -192,9 +192,9 @@ def _render_auth() -> None:
 
 
 def _navigation_pages(user: dict[str, Any]) -> list[str]:
-    pages = ["我的信息", "题目"]
+    pages = ["我的信息", "题目", "AI 智能命题"]
     if user.get("role") == "admin":
-        pages.extend(["提交记录", "AI 智能命题", "用户管理", "访问审计"])
+        pages.extend(["提交记录", "用户管理", "访问审计"])
     return pages
 
 
@@ -214,7 +214,7 @@ def _sidebar_navigation(user: dict[str, Any]) -> str:
         st.session_state.navigation = "题目"
     page = st.sidebar.radio("导航", pages, key="navigation")
 
-    if st.sidebar.button("退出登录", use_container_width=True):
+    if st.sidebar.button("退出登录", width="stretch"):
         try:
             _client().post("/api/auth/logout")
         except APIClientError:
@@ -255,9 +255,9 @@ def _load_problems() -> list[dict[str, str]]:
 
 
 def _problem_operations(user: dict[str, Any]) -> list[str]:
-    operations = ["题目列表"]
+    operations = ["题目列表", "新建题目", "编辑题目"]
     if user.get("role") == "admin":
-        operations.extend(["新建题目", "编辑题目", "删除题目"])
+        operations.append("删除题目")
     return operations
 
 
@@ -417,7 +417,7 @@ def _problem_form(
                 on_click=lambda: st.session_state.update(
                     {id_widget_key: generate_unique_problem_id(existing_ids)}
                 ),
-                use_container_width=True,
+                width="stretch",
             )
             if problem_id.strip() in existing_ids:
                 id_column.error("该题目 ID 已存在")
@@ -547,7 +547,7 @@ def _problem_form(
                 key=f"{form_key}_memory_limit",
             )
         else:
-            st.caption("代码长度、运行时间和内存限制由老师设置。")
+            st.caption("当前表单不允许修改代码长度、运行时间和内存限制。")
         author_column, difficulty_column = st.columns(2)
         author = author_column.text_input(
             "作者（选填）", value=data.get("author", ""), key=f"{form_key}_author"
@@ -622,7 +622,7 @@ def _problem_page(user: dict[str, Any]) -> None:
         if not problems:
             st.info("暂无题目。")
             return
-        st.dataframe(problems, use_container_width=True, hide_index=True)
+        st.dataframe(problems, width="stretch", hide_index=True)
         selected = st.selectbox(
             "查看题目",
             [item["id"] for item in problems],
@@ -645,7 +645,7 @@ def _problem_page(user: dict[str, Any]) -> None:
             "创建题目",
             initial=generated,
             lock_id=False,
-            can_set_resource_limits=user.get("role") == "admin",
+            can_set_resource_limits=True,
             existing_problem_ids={item["id"] for item in problems},
         )
         if payload is not None:
@@ -685,7 +685,7 @@ def _problem_page(user: dict[str, Any]) -> None:
         f"edit_problem_{problem_id}_{st.session_state.get('ai_generated_form_key', 'manual')}",
         "保存修改",
         initial=form_initial,
-        can_set_resource_limits=user.get("role") == "admin",
+        can_set_resource_limits=True,
     )
     if payload is not None:
         try:
@@ -774,12 +774,9 @@ def _render_submission_detail(submission_id: str, is_admin: bool) -> None:
     )
     if status == "pending":
         st.info("评测任务正在排队或执行，请稍后刷新提交记录。")
-    if detail.get("error_info"):
-        st.error(f"评测错误：{detail['error_info']}")
-    compile_info = detail.get("compile_info")
-    if isinstance(compile_info, dict) and compile_info.get("result") == "CE":
-        message = str(compile_info.get("message", "")).strip()
-        st.error(f"编译失败：{message}" if message else "编译失败。")
+    # Failure details are displayed only after the user explicitly opens the
+    # Step-5 judging log.  Keeping compiler and runner output out of the
+    # submission summary gives users and administrators the same audit trail.
 
     log_column, rejudge_column = st.columns(2)
     show_log = log_column.button("查看评测日志", key=f"log_{submission_id}")
@@ -839,7 +836,7 @@ def _render_problem_submission_history(
     refresh_column.button(
         "刷新本题提交记录",
         key=f"refresh_problem_submissions_{problem_id}",
-        use_container_width=True,
+        width="stretch",
     )
     page = int(
         page_column.number_input(
@@ -874,7 +871,7 @@ def _render_problem_submission_history(
         }
         for item in submissions
     ]
-    st.dataframe(display_rows, use_container_width=True, hide_index=True)
+    st.dataframe(display_rows, width="stretch", hide_index=True)
 
     submissions_by_id = {item["submission_id"]: item for item in submissions}
     submission_ids = list(submissions_by_id)
@@ -950,7 +947,7 @@ def _submissions_page(user: dict[str, Any]) -> None:
                         for item in listing["submissions"]
                     ]
                     st.dataframe(
-                        display_rows, use_container_width=True, hide_index=True
+                        display_rows, width="stretch", hide_index=True
                     )
                 else:
                     st.info("没有符合条件的提交。")
@@ -988,7 +985,7 @@ def _users_page() -> None:
         _show_error(exc)
         return
     st.write(f"共 {listing['total']} 个用户")
-    st.dataframe(listing["users"], use_container_width=True, hide_index=True)
+    st.dataframe(listing["users"], width="stretch", hide_index=True)
 
     st.subheader("修改角色")
     with st.form("update_role"):

@@ -169,12 +169,16 @@ def test_student_navigation_embeds_submission_features_under_problems():
     assert "提交代码" not in teacher_pages
     assert "提交记录" not in student_pages
     assert "提交记录" in teacher_pages
-    assert "AI 智能命题" not in student_pages
+    assert "AI 智能命题" in student_pages
     assert "AI 智能命题" in teacher_pages
 
 
-def test_problem_operations_show_management_actions_only_to_admins():
-    assert ui._problem_operations({"role": "user"}) == ["题目列表"]
+def test_problem_operations_allow_logged_in_users_to_create_and_edit():
+    assert ui._problem_operations({"role": "user"}) == [
+        "题目列表",
+        "新建题目",
+        "编辑题目",
+    ]
     assert ui._problem_operations({"role": "admin"}) == [
         "题目列表",
         "新建题目",
@@ -265,6 +269,45 @@ def test_submission_detail_loads_testcases_from_step5_log_endpoint(monkeypatch):
             }
         ]
     ]
+
+
+@pytest.mark.parametrize("is_admin", [False, True])
+def test_submission_detail_does_not_show_raw_judge_errors(monkeypatch, is_admin):
+    class FakeColumn:
+        def metric(self, _label, _value):
+            return None
+
+        def button(self, _label, **_kwargs):
+            return False
+
+    class FakeClient:
+        def get(self, _path):
+            return SimpleNamespace(
+                data={
+                    "submission_id": "submission-ce",
+                    "status": "success",
+                    "score": 0,
+                    "counts": 10,
+                    "compile_info": {
+                        "result": "CE",
+                        "message": "<submission>/Main.cpp:1:1: error: expected unqualified-id",
+                    },
+                    "run_info": None,
+                    "error_info": "judge internal error",
+                }
+            )
+
+    fake_streamlit = SimpleNamespace(
+        subheader=lambda _text: None,
+        columns=lambda count: [FakeColumn() for _ in range(count)],
+        info=lambda _text: None,
+        error=lambda message: pytest.fail(f"raw judge error was shown: {message}"),
+        session_state={},
+    )
+    monkeypatch.setattr(ui, "st", fake_streamlit)
+    monkeypatch.setattr(ui, "_client", lambda: FakeClient())
+
+    ui._render_submission_detail("submission-ce", is_admin=is_admin)
 
 
 def test_audit_rows_show_username_and_explain_the_audited_action():

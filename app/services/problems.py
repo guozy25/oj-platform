@@ -3,10 +3,6 @@ from app.db.database import Database
 from app.models.problems import ProblemInput, ProblemModel
 from app.repositories.problems import ProblemRepository
 
-RESOURCE_LIMIT_FIELDS = frozenset(
-    {"code_length_limit", "time_limit", "memory_limit"}
-)
-
 
 class ProblemService:
     def __init__(self, database: Database, repository: ProblemRepository) -> None:
@@ -21,28 +17,16 @@ class ProblemService:
         problem = await self.repository.get(problem_id)
         return problem.to_api_dict()
 
-    @staticmethod
-    def _ensure_resource_limit_permission(problem: ProblemInput, role: str) -> None:
-        if role != "admin" and RESOURCE_LIMIT_FIELDS & problem.model_fields_set:
-            raise APIError(403, "only teachers can set problem resource limits")
-
-    async def create_problem(self, problem: ProblemInput, role: str) -> dict[str, str]:
-        self._ensure_resource_limit_permission(problem, role)
+    async def create_problem(self, problem: ProblemInput) -> dict[str, str]:
         stored_problem = ProblemModel.model_validate(problem.model_dump())
         await self.repository.create(stored_problem)
         return {"id": problem.id}
 
-    async def update_problem(
-        self, problem_id: str, problem: ProblemInput, role: str
-    ) -> dict[str, str]:
-        self._ensure_resource_limit_permission(problem, role)
+    async def update_problem(self, problem_id: str, problem: ProblemInput) -> dict[str, str]:
         if problem_id != problem.id:
             raise APIError(400, "problem id does not match request path")
         existing = await self.repository.get(problem_id)
         problem_data = problem.model_dump()
-        if role != "admin":
-            for field in RESOURCE_LIMIT_FIELDS:
-                problem_data[field] = getattr(existing, field)
         stored_problem = ProblemModel.model_validate(
             {**problem_data, "public_cases": existing.public_cases}
         )

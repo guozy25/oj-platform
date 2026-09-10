@@ -12,6 +12,7 @@ from app.core.errors import install_exception_handlers
 from app.db.database import Database
 from app.services.ai_provider import AIProviderClient
 from app.services.judge_tasks import schedule_judge
+from app.services.sandbox import verify_judge_sandbox
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -21,6 +22,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(application: FastAPI):
         database = Database(app_settings)
         await database.initialize()
+        await asyncio.to_thread(verify_judge_sandbox, app_settings)
         application.state.settings = app_settings
         application.state.database = database
         application.state.background_tasks = set()

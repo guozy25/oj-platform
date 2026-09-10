@@ -456,6 +456,34 @@ async def test_submission_errors_and_rate_limit(client, app):
 
 
 @pytest.mark.asyncio
+async def test_submission_rate_limit_is_atomic_for_concurrent_requests(client, app):
+    await register_login_and_create_problem(
+        client, app, username="concurrent-rate-user", problem_id="concurrent-rate-limit"
+    )
+
+    responses = await asyncio.gather(
+        *(
+            submit(
+                client,
+                "concurrent-rate-limit",
+                "a, b = map(int, input().split())\nprint(a + b)",
+            )
+            for _index in range(8)
+        )
+    )
+
+    assert sum(response.status_code == 200 for response in responses) == 3
+    assert sum(response.status_code == 429 for response in responses) == 5
+    accepted_ids = [
+        response.json()["data"]["submission_id"]
+        for response in responses
+        if response.status_code == 200
+    ]
+    for submission_id in accepted_ids:
+        await wait_for_result(app, submission_id)
+
+
+@pytest.mark.asyncio
 @pytest.mark.skipif(shutil.which("g++") is None, reason="g++ is required for C++ judging")
 async def test_cpp_compilation_success_and_error(client, app, test_settings):
     await register_login_and_create_problem(

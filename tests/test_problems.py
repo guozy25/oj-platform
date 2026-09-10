@@ -118,7 +118,7 @@ async def test_create_list_get_and_update_problem(client, test_settings):
 
 
 @pytest.mark.asyncio
-async def test_only_admin_can_create_or_update_problems(client, test_settings):
+async def test_all_logged_in_users_can_create_and_update_problems(client, test_settings):
     await login_as_admin(client, test_settings)
     teacher_payload = problem_payload("teacher-limits")
     teacher_payload.update(
@@ -129,9 +129,8 @@ async def test_only_admin_can_create_or_update_problems(client, test_settings):
     await client.post("/api/auth/logout")
     await register_and_login(client, "student-author")
 
-    assert (
-        await client.post("/api/problems/", json=problem_payload("student-create"))
-    ).status_code == 403
+    created = await client.post("/api/problems/", json=problem_payload("student-create"))
+    assert created.status_code == 200
 
     for field, value in (
         ("code_length_limit", 100),
@@ -141,17 +140,19 @@ async def test_only_admin_can_create_or_update_problems(client, test_settings):
         attempted_create = problem_payload(f"student-{field}")
         attempted_create[field] = value
         response = await client.post("/api/problems/", json=attempted_create)
-        assert response.status_code == 403
-        assert response.json()["msg"] == "permission denied"
+        assert response.status_code == 200
 
     attempted_update = problem_payload("teacher-limits", "Student content edit")
+    attempted_update.update(
+        {"code_length_limit": 64, "time_limit": 1.0, "memory_limit": 96}
+    )
     response = await client.put("/api/problems/teacher-limits", json=attempted_update)
-    assert response.status_code == 403
+    assert response.status_code == 200
     detail = (await client.get("/api/problems/teacher-limits")).json()["data"]
-    assert detail["code_length_limit"] == 32
-    assert detail["time_limit"] == 0.5
-    assert detail["memory_limit"] == 64
-    assert detail["title"] == "A+B Problem"
+    assert detail["code_length_limit"] == 64
+    assert detail["time_limit"] == 1.0
+    assert detail["memory_limit"] == 96
+    assert detail["title"] == "Student content edit"
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,10 @@ if ! command -v g++ >/dev/null 2>&1; then
   echo "ERROR: g++ is required for C++14 judging." >&2
   exit 1
 fi
+if ! command -v bwrap >/dev/null 2>&1; then
+  echo "ERROR: bubblewrap is required for secure judging." >&2
+  exit 1
+fi
 
 "${oj_python_bin}" -c \
   'import sys; assert sys.version_info >= (3, 10), "Python 3.10 or newer is required"'
@@ -38,6 +42,7 @@ echo "Linux: $(uname -srmo)"
 echo "Application Python: $("${oj_python_bin}" --version 2>&1)"
 echo "Judge python3: $(python3 --version 2>&1)"
 echo "Compiler: g++ ${compiler_version}"
+echo "Sandbox: $(bwrap --version 2>&1)"
 
 "${oj_python_bin}" -m ruff check .
 "${oj_python_bin}" -m pytest

@@ -35,10 +35,10 @@ jobs:
             requirements.txt
             requirements-dev.txt
 
-      - name: Install GCC and Python dependencies
+      - name: Install GCC, Bubblewrap, and Python dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends g++
+          sudo apt-get install --yes --no-install-recommends bubblewrap g++
           python -m pip install --upgrade pip
           python -m pip install -r requirements-dev.txt
 

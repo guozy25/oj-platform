@@ -143,31 +143,37 @@ async def test_ai_endpoints_require_authentication_before_body_validation(client
 
 
 @pytest.mark.asyncio
-async def test_ai_endpoints_reject_regular_users_before_body_validation(client):
-    await register(client, "ai-forbidden-user")
-    await login(client, "ai-forbidden-user", "secret123")
+async def test_ai_endpoints_are_available_to_regular_users(client):
+    await register(client, "ai-regular-user")
+    await login(client, "ai-regular-user", "secret123")
 
-    responses = [
-        await client.get("/api/ai/model-config"),
-        await client.put("/api/ai/model-config", json={}),
-        await client.get("/api/ai/habit-configs/"),
-        await client.post("/api/ai/habit-configs/", json={}),
-        await client.put("/api/ai/habit-configs/missing", json={}),
-        await client.put("/api/ai/habit-configs/missing/select"),
-        await client.delete("/api/ai/habit-configs/missing"),
-        await client.post("/api/ai/problem-tasks/", json={}),
-        await client.get("/api/ai/problem-tasks/"),
-        await client.get("/api/ai/problem-tasks/missing"),
-        await client.get("/api/ai/problem-tasks/missing/revisions/"),
-        await client.get("/api/ai/problem-tasks/missing/revisions/1"),
+    assert (await client.get("/api/ai/model-config")).status_code == 200
+    assert (await client.put("/api/ai/model-config", json={})).status_code == 400
+    assert (await client.get("/api/ai/habit-configs/")).status_code == 200
+    assert (await client.post("/api/ai/habit-configs/", json={})).status_code == 400
+    assert (
+        await client.put("/api/ai/habit-configs/missing", json={})
+    ).status_code == 400
+    assert (
+        await client.put("/api/ai/habit-configs/missing/select")
+    ).status_code == 404
+    assert (await client.delete("/api/ai/habit-configs/missing")).status_code == 404
+    assert (await client.post("/api/ai/problem-tasks/", json={})).status_code == 400
+    assert (await client.get("/api/ai/problem-tasks/")).status_code == 200
+    assert (await client.get("/api/ai/problem-tasks/missing")).status_code == 404
+    assert (
+        await client.get("/api/ai/problem-tasks/missing/revisions/")
+    ).status_code == 404
+    assert (
+        await client.get("/api/ai/problem-tasks/missing/revisions/1")
+    ).status_code == 404
+    assert (
         await client.post(
             "/api/ai/problem-tasks/missing/refinements/",
             json={"feedback": "改简单"},
-        ),
-        await client.put("/api/ai/problem-tasks/missing/cancel"),
-    ]
-
-    assert all(response.status_code == 403 for response in responses)
+        )
+    ).status_code == 404
+    assert (await client.put("/api/ai/problem-tasks/missing/cancel")).status_code == 404
 
 
 @pytest.mark.asyncio
@@ -255,7 +261,7 @@ async def test_habit_configs_can_be_saved_selected_updated_and_deleted(
 
 
 @pytest.mark.asyncio
-async def test_habit_configs_are_admin_isolated_and_limited_to_ten(
+async def test_habit_configs_are_user_isolated_and_limited_to_ten(
     client, test_settings
 ):
     await login_as_initial_admin(client, test_settings)
@@ -679,8 +685,9 @@ async def test_other_admin_can_view_but_not_refine_an_ai_task(
 
 
 @pytest.mark.asyncio
-async def test_cancel_actually_stops_running_provider(client, app, test_settings):
-    await login_as_initial_admin(client, test_settings)
+async def test_regular_user_can_create_and_cancel_running_ai_task(client, app):
+    await register(client, "ai-task-owner")
+    await login(client, "ai-task-owner", "secret123")
     await client.put("/api/ai/model-config", json=model_config())
     started = asyncio.Event()
     app.state.ai_provider_factory = lambda config: BlockingProvider(config, started)
